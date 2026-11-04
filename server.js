@@ -49,12 +49,6 @@ async function authenticate(req, res, next) {
 
     const token  = authHeader.slice(7).trim();
     const uid    = req.headers['uid']    || '';
-    const client = req.headers['client'] || '';
-
-    console.log('Headers received:');
-    console.log('  token:', token);
-    console.log('  uid:', uid);
-    console.log('  client:', client);
 
     // Guest bypass — uid field is optional for guests
     if (token === 'guest_token') {
@@ -62,16 +56,10 @@ async function authenticate(req, res, next) {
       return next();
     }
 
-    const [rows] = await pool.query(
-      'SELECT token, uid, client FROM users WHERE token = ?', [token]
-    );
-    console.log('MySQL row found:', rows[0]);
-
     const [[user]] = await pool.query(
       'SELECT * FROM users WHERE token = ? AND uid = ?',
       [token, uid]
     );
-    console.log('Auth check - token:', token, 'found user:', !!user);
     if (!user) return res.status(401).json({ error: 'Invalid or expired token' });
 
     req.user = user;
@@ -126,10 +114,6 @@ app.post('/api/v1/auth/sign_in', async (req, res, next) => {
     const tokenToUse  = user.token  || uuidv4();
     const clientToUse = user.client || uuidv4();
     const uidToUse    = user.email;
-
-    console.log('Sign in attempt:', email);
-    console.log('Existing token:', user.token);
-    console.log('Returning token:', tokenToUse);
 
     if (!user.token) {
       await pool.query(
