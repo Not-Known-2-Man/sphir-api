@@ -1,5 +1,5 @@
 /**
- * Sphir Local API — Node.js + Express + MySQL
+ * Sphir Local API — Node.js + Express + PostgreSQL
  * Port: 3000
  *
  * Start:  npm start
@@ -10,7 +10,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
-const mysql   = require('mysql2/promise');
+const { Pool } = require('pg');
 const bcrypt  = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
@@ -29,14 +29,22 @@ app.use((req, res, next) => {
 
 // ── Database pool ─────────────────────────────────────────────────────────────
 
-const pool = mysql.createPool({
-  host:             process.env.DB_HOST     || 'localhost',
-  user:             process.env.DB_USER     || 'root',
-  password:         process.env.DB_PASSWORD || '',
-  database:         process.env.DB_NAME     || 'sphir_local',
-  waitForConnections: true,
-  connectionLimit:  10,
-});
+// DATABASE_URL wins (Render); otherwise the discrete DB_* variables are used.
+const pool = new Pool(process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL, max: 10 }
+  : {
+      host:     process.env.DB_HOST     || 'localhost',
+      user:     process.env.DB_USER     || process.env.USER,
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME     || 'sphir_dev',
+      max:      10,
+    });
+
+// Lets queries keep MySQL-style `?` placeholders; they become $1, $2, ...
+function query(sql, params = []) {
+  let i = 0;
+  return pool.query(sql.replace(/\?/g, () => `$${++i}`), params);
+}
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
 
@@ -56,7 +64,7 @@ async function authenticate(req, res, next) {
       return next();
     }
 
-    const [[user]] = await pool.query(
+    const { rows: [user] } = await query(
       'SELECT * FROM users WHERE token = ? AND uid = ?',
       [token, uid]
     );
@@ -103,8 +111,8 @@ app.post('/api/v1/auth/sign_in', async (req, res, next) => {
       return res.status(422).json({ error: 'email and password are required' });
     }
 
-    const [[user]] = await pool.query(
-      'SELECT * FROM users WHERE email = ? AND is_guest = 0', [email]
+    const { rows: [user] } = await query(
+      'SELECT * FROM users WHERE email = ? AND is_guest = false', [email]
     );
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -116,7 +124,7 @@ app.post('/api/v1/auth/sign_in', async (req, res, next) => {
     const uidToUse    = user.email;
 
     if (!user.token) {
-      await pool.query(
+      await query(
         'UPDATE users SET token = ?, uid = ?, client = ? WHERE id = ?',
         [tokenToUse, uidToUse, clientToUse, user.id]
       );
@@ -145,7 +153,7 @@ async function handleSignUp(req, res, next) {
       return res.status(422).json({ error: 'Passwords do not match' });
     }
 
-    const [[existing]] = await pool.query(
+    const { rows: [existing] } = await query(
       'SELECT id FROM users WHERE email = ?', [email]
     );
     if (existing) return res.status(422).json({ error: 'Email already registered' });
@@ -155,8 +163,8 @@ async function handleSignUp(req, res, next) {
     const client = uuidv4();
     const uid    = email;
 
-    const [result] = await pool.query(
-      'INSERT INTO users (email, password_hash, first_name, last_name, token, uid, client, is_guest) VALUES (?,?,?,?,?,?,?,0)',
+    await query(
+      'INSERT INTO users (email, password_hash, first_name, last_name, token, uid, client, is_guest) VALUES (?,?,?,?,?,?,?,false)',
       [email, hash, first_name || '', last_name || '', token, uid, client]
     );
 
@@ -182,7 +190,7 @@ app.get('/api/v1/auth/guest', (_req, res) => {
 app.delete('/api/v1/auth/sign_out', authenticate, async (req, res, next) => {
   try {
     if (!req.user.is_guest) {
-      await pool.query(
+      await query(
         'UPDATE users SET token = NULL, uid = NULL, client = NULL WHERE id = ?',
         [req.user.id]
       );
@@ -199,8 +207,8 @@ app.delete('/api/v1/auth/sign_out', authenticate, async (req, res, next) => {
 app.get('/api/v1/folders', authenticate, async (req, res, next) => {
   try {
     if (req.user.is_guest) return res.json([]);
-    const [rows] = await pool.query(
-      'SELECT * FROM folders WHERE user_id = ? ORDER BY created_at ASC',
+    const { rows } = await query(
+      'SELECT * FROM folders WHERE user_id = ? ORDER BY created_at ASC, id ASC',
       [req.user.id]
     );
     res.json(rows);
@@ -214,11 +222,10 @@ app.post('/api/v1/folders', authenticate, async (req, res, next) => {
     if (!name) return res.status(422).json({ error: 'name is required' });
 
     const userId = req.user.is_guest ? null : req.user.id;
-    const [result] = await pool.query(
-      'INSERT INTO folders (user_id, name, description, privacy) VALUES (?,?,?,?)',
+    const { rows: [row] } = await query(
+      'INSERT INTO folders (user_id, name, description, privacy) VALUES (?,?,?,?) RETURNING *',
       [userId, name, description, privacy]
     );
-    const [[row]] = await pool.query('SELECT * FROM folders WHERE id = ?', [result.insertId]);
     res.status(201).json(row);
   } catch (err) { next(err); }
 });
@@ -228,7 +235,7 @@ app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, description, privacy } = req.body;
-    await pool.query(
+    await query(
       `UPDATE folders SET
          name        = COALESCE(?, name),
          description = COALESCE(?, description),
@@ -236,7 +243,7 @@ app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
        WHERE id = ? AND user_id = ?`,
       [name, description, privacy, id, req.user.id]
     );
-    const [[row]] = await pool.query('SELECT * FROM folders WHERE id = ?', [id]);
+    const { rows: [row] } = await query('SELECT * FROM folders WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ error: 'Folder not found' });
     res.json(row);
   } catch (err) { next(err); }
@@ -246,11 +253,11 @@ app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
 app.delete('/api/v1/folders/:id', authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.query(
+    const result = await query(
       'DELETE FROM folders WHERE id = ? AND user_id = ?',
       [id, req.user.id]
     );
-    if (!result.affectedRows) return res.status(404).json({ error: 'Folder not found' });
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -268,8 +275,8 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
     const perPage = Math.min(100, parseInt(req.query.per_page || '50', 10));
     const offset  = (page - 1) * perPage;
 
-    const [rows] = await pool.query(
-      'SELECT * FROM businesses WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    const { rows } = await query(
+      'SELECT * FROM businesses WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
       [req.user.id, perPage, offset]
     );
     res.json(rows.map(formatBusiness));
@@ -286,11 +293,10 @@ app.post('/api/v1/businesses', authenticate, async (req, res, next) => {
     const userId   = req.user.is_guest ? null : req.user.id;
     const tagsJson = JSON.stringify(parseTags(tags));
 
-    const [result] = await pool.query(
-      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags) VALUES (?,?,?,?,?,?,?)',
+    const { rows: [row] } = await query(
+      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags) VALUES (?,?,?,?,?,?,?) RETURNING *',
       [userId, folder_id, title, description, website, email, tagsJson]
     );
-    const [[row]] = await pool.query('SELECT * FROM businesses WHERE id = ?', [result.insertId]);
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
 });
@@ -302,7 +308,7 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
     const { title, description, website, email, tags, folder_id } = req.body;
     const tagsJson = tags !== undefined ? JSON.stringify(parseTags(tags)) : undefined;
 
-    await pool.query(
+    await query(
       `UPDATE businesses SET
          title       = COALESCE(?, title),
          description = COALESCE(?, description),
@@ -313,7 +319,7 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
        WHERE id = ? AND user_id = ?`,
       [title, description, website, email, tagsJson, folder_id, id, req.user.id]
     );
-    const [[row]] = await pool.query('SELECT * FROM businesses WHERE id = ?', [id]);
+    const { rows: [row] } = await query('SELECT * FROM businesses WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ error: 'Business not found' });
     res.json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -323,11 +329,11 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
 app.delete('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.query(
+    const result = await query(
       'DELETE FROM businesses WHERE id = ? AND user_id = ?',
       [id, req.user.id]
     );
-    if (!result.affectedRows) return res.status(404).json({ error: 'Business not found' });
+    if (!result.rowCount) return res.status(404).json({ error: 'Business not found' });
     res.json({ success: true });
   } catch (err) { next(err); }
 });

@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "seed": "node database/seed.js"
+    "seed": "node database/seed.js",
+    "migrate-from-mysql": "node database/migrate-from-mysql.js"
   },
   "dependencies": {
     "axios": "^1.18.1",
@@ -14,7 +15,10 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
-    "mysql2": "^3.9.0",
+    "pg": "^8.23.1",
     "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "mysql2": "^3.9.0"
   }
 }

@@ -1,39 +1,36 @@
-CREATE DATABASE IF NOT EXISTS sphir_dev;
-USE sphir_dev;
+-- PostgreSQL schema. Run against an existing database:
+--   psql "$DATABASE_URL" -f database/schema.sql
 
 CREATE TABLE IF NOT EXISTS users (
-  id           INT AUTO_INCREMENT PRIMARY KEY,
-  email        VARCHAR(255) UNIQUE NOT NULL,
+  id            SERIAL       PRIMARY KEY,
+  email         VARCHAR(255) UNIQUE NOT NULL,
   password_hash VARCHAR(255),
-  first_name   VARCHAR(100) NOT NULL DEFAULT '',
-  last_name    VARCHAR(100) NOT NULL DEFAULT '',
-  token        VARCHAR(255),
-  uid          VARCHAR(255),
-  client       VARCHAR(255),
-  is_guest     TINYINT(1)  NOT NULL DEFAULT 0,
-  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP
+  first_name    VARCHAR(100) NOT NULL DEFAULT '',
+  last_name     VARCHAR(100) NOT NULL DEFAULT '',
+  token         VARCHAR(255),
+  uid           VARCHAR(255),
+  client        VARCHAR(255),
+  is_guest      BOOLEAN      NOT NULL DEFAULT false,
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS folders (
-  id          INT AUTO_INCREMENT PRIMARY KEY,
-  user_id     INT          NOT NULL,
+  id          SERIAL       PRIMARY KEY,
+  user_id     INT          NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name        VARCHAR(255) NOT NULL,
   description TEXT         NOT NULL,
   privacy     VARCHAR(50)  NOT NULL DEFAULT 'private',
-  created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS businesses (
-  id          INT AUTO_INCREMENT PRIMARY KEY,
-  user_id     INT          NOT NULL,
-  folder_id   INT,
+  id          SERIAL       PRIMARY KEY,
+  user_id     INT          NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+  folder_id   INT                   REFERENCES folders(id) ON DELETE SET NULL,
   title       VARCHAR(255) NOT NULL,
   description TEXT         NOT NULL,
   website     VARCHAR(500) NOT NULL DEFAULT '',
   email       VARCHAR(255) NOT NULL DEFAULT '',
-  tags        JSON         NOT NULL,
-  created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id)   REFERENCES users(id)   ON DELETE CASCADE,
-  FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
+  tags        JSONB        NOT NULL,
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );

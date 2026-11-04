@@ -8,19 +8,29 @@
 
 require('dotenv').config();
 
-const mysql    = require('mysql2/promise');
-const bcrypt   = require('bcryptjs');
+const { Client } = require('pg');
+const bcrypt     = require('bcryptjs');
 
-const DB = {
-  host:             process.env.DB_HOST     || 'localhost',
-  user:             process.env.DB_USER     || 'root',
-  password:         process.env.DB_PASSWORD || '',
-  database:         process.env.DB_NAME     || 'sphir_local',
-  multipleStatements: true,
-};
+const DB = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL }
+  : {
+      host:     process.env.DB_HOST     || 'localhost',
+      user:     process.env.DB_USER     || process.env.USER,
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME     || 'sphir_dev',
+    };
 
 async function seed() {
-  const conn = await mysql.createConnection(DB);
+  const client = new Client(DB);
+  await client.connect();
+  // Same `?` placeholder convention as server.js.
+  const conn = {
+    query: (sql, params = []) => {
+      let i = 0;
+      return client.query(sql.replace(/\?/g, () => `$${++i}`), params);
+    },
+    end: () => client.end(),
+  };
 
   // ── Test user ────────────────────────────────────────────────────────────
   const EMAIL    = process.env.SEED_EMAIL;
@@ -31,7 +41,7 @@ async function seed() {
 
   const hash = await bcrypt.hash(PASSWORD, 10);
 
-  const [[existing]] = await conn.query(
+  const { rows: [existing] } = await conn.query(
     'SELECT id FROM users WHERE email = ?', [EMAIL]
   );
 
@@ -44,11 +54,11 @@ async function seed() {
     );
     console.log('✓ Updated test user (id=%d)', userId);
   } else {
-    const [r] = await conn.query(
-      'INSERT INTO users (email, password_hash, first_name, last_name, uid, is_guest) VALUES (?,?,?,?,?,0)',
+    const { rows: [r] } = await conn.query(
+      'INSERT INTO users (email, password_hash, first_name, last_name, uid, is_guest) VALUES (?,?,?,?,?,false) RETURNING id',
       [EMAIL, hash, 'Saul', 'Alejandro', EMAIL]
     );
-    userId = r.insertId;
+    userId = r.id;
     console.log('✓ Created test user (id=%d)', userId);
   }
 
@@ -66,11 +76,11 @@ async function seed() {
 
   const folderIds = [];
   for (const f of FOLDERS) {
-    const [r] = await conn.query(
-      'INSERT INTO folders (user_id, name, description, privacy) VALUES (?,?,?,?)',
+    const { rows: [r] } = await conn.query(
+      'INSERT INTO folders (user_id, name, description, privacy) VALUES (?,?,?,?) RETURNING id',
       [userId, f.name, f.description, f.privacy]
     );
-    folderIds.push(r.insertId);
+    folderIds.push(r.id);
   }
   console.log('✓ Created %d folders', folderIds.length);
 

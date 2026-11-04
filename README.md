@@ -1,24 +1,23 @@
 # Sphir Local API
 
-Local REST API for iOS simulator testing. Node.js + Express + MySQL on port 3000.
+REST API for the Sphir web and iOS apps. Node.js + Express + PostgreSQL on port 3000.
 
 ## Prerequisites
 
 - Node.js 18+
-- MySQL 8+ running locally
+- PostgreSQL 18 running locally (`brew install postgresql@18 && brew services start postgresql@18`)
 
 ## Setup
 
 ```bash
-cd ~/Documents/SphirAPI
-
 # 1. Install dependencies
 npm install
 
-# 2. Create the database schema (connect to MySQL first)
-mysql -u root -p < database/schema.sql
+# 2. Create the database and schema
+createdb sphir_dev
+psql -d sphir_dev -f database/schema.sql
 
-# 3. Seed test user + sample data
+# 3. Seed test user + sample data (needs SEED_EMAIL and SEED_PASSWORD)
 npm run seed
 
 # 4. Start the server
@@ -109,12 +108,26 @@ DELETE /api/v1/businesses/:id
 
 ## Environment variables (optional)
 
+`DATABASE_URL` (as provided by Render) takes precedence over the `DB_*` variables.
+
 ```
+DATABASE_URL=postgres://user:password@host:5432/sphir_dev
 DB_HOST=localhost
-DB_USER=root
+DB_USER=          # defaults to your OS user
 DB_PASSWORD=
 DB_NAME=sphir_dev
 PORT=3000
 SEED_EMAIL=
 SEED_PASSWORD=
 ```
+
+## Migrating legacy MySQL data
+
+`database/migrate-from-mysql.js` copies users, folders and cards from the old MySQL
+database (read from the `DB_*` variables) into an empty Postgres database, keeping ids:
+
+```bash
+TARGET_DATABASE_URL=postgres://... npm run migrate-from-mysql
+```
+
+It aborts if the target already has users.
