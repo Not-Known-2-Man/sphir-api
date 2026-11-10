@@ -243,7 +243,10 @@ app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
        WHERE id = ? AND user_id = ?`,
       [name, description, privacy, id, req.user.id]
     );
-    const { rows: [row] } = await query('SELECT * FROM folders WHERE id = ?', [id]);
+    const { rows: [row] } = await query(
+      'SELECT * FROM folders WHERE id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
     if (!row) return res.status(404).json({ error: 'Folder not found' });
     res.json(row);
   } catch (err) { next(err); }
@@ -319,7 +322,10 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
        WHERE id = ? AND user_id = ?`,
       [title, description, website, email, tagsJson, folder_id, id, req.user.id]
     );
-    const { rows: [row] } = await query('SELECT * FROM businesses WHERE id = ?', [id]);
+    const { rows: [row] } = await query(
+      'SELECT * FROM businesses WHERE id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
     if (!row) return res.status(404).json({ error: 'Business not found' });
     res.json(formatBusiness(row));
   } catch (err) { next(err); }
