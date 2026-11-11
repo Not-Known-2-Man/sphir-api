@@ -13,6 +13,10 @@ const cors    = require('cors');
 const { Pool } = require('pg');
 const bcrypt  = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+const dns     = require('dns');
+const http    = require('http');
+const https   = require('https');
+const net     = require('net');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -77,7 +81,32 @@ async function authenticate(req, res, next) {
   }
 }
 
+// Guests share one public token, so they may read (empty lists) but never write.
+function requireUser(req, res, next) {
+  if (req.user.is_guest) {
+    return res.status(403).json({ error: 'Sign up to save Sphirs and cards' });
+  }
+  next();
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+const MAX_INT4 = 2147483647;
+
+function isValidId(value) {
+  const s = String(value);
+  return /^[1-9]\d*$/.test(s) && Number(s) <= MAX_INT4;
+}
+
+// Absent or empty folder_id means "no folder"; anything else must be a folder the user owns.
+async function folderAllowed(folderId, userId) {
+  if (folderId === undefined || folderId === null || folderId === '') return true;
+  if (!isValidId(folderId)) return false;
+  const { rows } = await query(
+    'SELECT 1 FROM folders WHERE id = ? AND user_id = ?', [folderId, userId]
+  );
+  return rows.length > 0;
+}
 
 function parseTags(raw) {
   if (Array.isArray(raw)) return raw;
@@ -92,11 +121,10 @@ function formatBusiness(row) {
   return { ...row, tags: parseTags(row.tags) };
 }
 
-// ── Error handler ─────────────────────────────────────────────────────────────
-
-app.use((err, req, res, _next) => {
-  console.error(err);
-  res.status(500).json({ error: err.message });
+// Non-numeric or out-of-range ids can never match a row; answer 404 instead of a pg error.
+app.param('id', (req, res, next, id) => {
+  if (!isValidId(id)) return res.status(404).json({ error: 'Not found' });
+  next();
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -216,22 +244,21 @@ app.get('/api/v1/folders', authenticate, async (req, res, next) => {
 });
 
 // POST /api/v1/folders
-app.post('/api/v1/folders', authenticate, async (req, res, next) => {
+app.post('/api/v1/folders', authenticate, requireUser, async (req, res, next) => {
   try {
     const { name, description = '', privacy = 'private' } = req.body;
     if (!name) return res.status(422).json({ error: 'name is required' });
 
-    const userId = req.user.is_guest ? null : req.user.id;
     const { rows: [row] } = await query(
       'INSERT INTO folders (user_id, name, description, privacy) VALUES (?,?,?,?) RETURNING *',
-      [userId, name, description, privacy]
+      [req.user.id, name, description, privacy]
     );
     res.status(201).json(row);
   } catch (err) { next(err); }
 });
 
 // PUT /api/v1/folders/:id
-app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
+app.put('/api/v1/folders/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, description, privacy } = req.body;
@@ -253,7 +280,7 @@ app.put('/api/v1/folders/:id', authenticate, async (req, res, next) => {
 });
 
 // DELETE /api/v1/folders/:id
-app.delete('/api/v1/folders/:id', authenticate, async (req, res, next) => {
+app.delete('/api/v1/folders/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
@@ -287,28 +314,33 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
 });
 
 // POST /api/v1/businesses
-app.post('/api/v1/businesses', authenticate, async (req, res, next) => {
+app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next) => {
   try {
     const { title, description = '', website = '', email = '',
             tags = [], folder_id = null } = req.body;
     if (!title) return res.status(422).json({ error: 'title is required' });
+    if (!(await folderAllowed(folder_id, req.user.id))) {
+      return res.status(422).json({ error: 'Folder not found' });
+    }
 
-    const userId   = req.user.is_guest ? null : req.user.id;
     const tagsJson = JSON.stringify(parseTags(tags));
 
     const { rows: [row] } = await query(
       'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags) VALUES (?,?,?,?,?,?,?) RETURNING *',
-      [userId, folder_id, title, description, website, email, tagsJson]
+      [req.user.id, folder_id || null, title, description, website, email, tagsJson]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
 });
 
 // PUT /api/v1/businesses/:id
-app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
+app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { title, description, website, email, tags, folder_id } = req.body;
+    if (!(await folderAllowed(folder_id, req.user.id))) {
+      return res.status(422).json({ error: 'Folder not found' });
+    }
     const tagsJson = tags !== undefined ? JSON.stringify(parseTags(tags)) : undefined;
 
     await query(
@@ -320,7 +352,7 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
          tags        = COALESCE(?, tags),
          folder_id   = COALESCE(?, folder_id)
        WHERE id = ? AND user_id = ?`,
-      [title, description, website, email, tagsJson, folder_id, id, req.user.id]
+      [title, description, website, email, tagsJson, folder_id || null, id, req.user.id]
     );
     const { rows: [row] } = await query(
       'SELECT * FROM businesses WHERE id = ? AND user_id = ?',
@@ -332,7 +364,7 @@ app.put('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
 });
 
 // DELETE /api/v1/businesses/:id
-app.delete('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
+app.delete('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
     const result = await query(
@@ -346,15 +378,68 @@ app.delete('/api/v1/businesses/:id', authenticate, async (req, res, next) => {
 
 // ── URL Preview ───────────────────────────────────────────────────────────────
 
-app.get('/api/v1/preview', async (req, res) => {
+// The server must never fetch its own network: loopback, private, link-local
+// (cloud metadata), CGNAT, multicast and reserved ranges are refused.
+const blockedAddresses = new net.BlockList();
+for (const [addr, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16],
+  ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4],
+]) blockedAddresses.addSubnet(addr, prefix, 'ipv4');
+for (const [addr, prefix] of [
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['64:ff9b::', 96],
+]) blockedAddresses.addSubnet(addr, prefix, 'ipv6');
+
+function isBlockedAddress(address) {
+  const ip = address.replace(/^\[|\]$/g, '');
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (mapped) return blockedAddresses.check(mapped[1], 'ipv4');
+  if (net.isIPv4(ip)) return blockedAddresses.check(ip, 'ipv4');
+  if (net.isIPv6(ip)) return blockedAddresses.check(ip, 'ipv6');
+  return false;
+}
+
+// Checks the resolved address at connect time, so DNS rebinding cannot slip past.
+function safeLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (err) return callback(err);
+    const list = Array.isArray(address) ? address : [{ address }];
+    if (list.some(a => isBlockedAddress(a.address))) {
+      return callback(Object.assign(new Error('Blocked address'), { code: 'EBLOCKED' }));
+    }
+    callback(null, address, family);
+  });
+}
+
+// IP-literal hosts skip DNS lookup, so they are checked directly (also on each redirect).
+function assertPublicUrl(rawUrl) {
+  const parsed = new URL(rawUrl);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported protocol');
+  if (isBlockedAddress(parsed.hostname)) throw new Error('Blocked address');
+  return parsed;
+}
+
+const previewAgents = {
+  httpAgent:  new http.Agent({ lookup: safeLookup }),
+  httpsAgent: new https.Agent({ lookup: safeLookup }),
+};
+
+app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
   try {
     const axios   = require('axios');
     const cheerio = require('cheerio');
     const { url } = req.query;
-    if (!url) return res.status(400).json({ error: 'URL required' });
+    if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
+    assertPublicUrl(url);
     const response = await axios.get(url, {
+      ...previewAgents,
       headers: { 'User-Agent': 'Mozilla/5.0' },
       timeout: 5000,
+      maxRedirects: 3,
+      maxContentLength: 2 * 1024 * 1024,
+      beforeRedirect: (options) => {
+        assertPublicUrl(`${options.protocol}//${options.hostname}`);
+      },
     });
     const $ = cheerio.load(response.data);
     res.json({
@@ -366,6 +451,14 @@ app.get('/api/v1/preview', async (req, res) => {
   } catch (e) {
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
+});
+
+// ── Error handler ─────────────────────────────────────────────────────────────
+
+// Registered after every route so next(err) reaches it; details stay in the logs.
+app.use((err, req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────────
