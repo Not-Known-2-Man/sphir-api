@@ -108,6 +108,17 @@ async function folderAllowed(folderId, userId) {
   return rows.length > 0;
 }
 
+// Only http(s) image URLs are stored; anything else becomes '' (no image).
+function sanitizeImageUrl(raw) {
+  if (typeof raw !== 'string' || raw.length > 2000) return '';
+  try {
+    const { protocol } = new URL(raw);
+    return protocol === 'http:' || protocol === 'https:' ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
 function parseTags(raw) {
   if (Array.isArray(raw)) return raw;
   if (typeof raw === 'string') {
@@ -317,7 +328,7 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
 app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next) => {
   try {
     const { title, description = '', website = '', email = '',
-            tags = [], folder_id = null } = req.body;
+            tags = [], folder_id = null, og_image } = req.body;
     if (!title) return res.status(422).json({ error: 'title is required' });
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
@@ -326,8 +337,8 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     const tagsJson = JSON.stringify(parseTags(tags));
 
     const { rows: [row] } = await query(
-      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags) VALUES (?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, title, description, website, email, tagsJson]
+      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image) VALUES (?,?,?,?,?,?,?,?) RETURNING *',
+      [req.user.id, folder_id || null, title, description, website, email, tagsJson, sanitizeImageUrl(og_image)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -337,11 +348,13 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, description, website, email, tags, folder_id } = req.body;
+    const { title, description, website, email, tags, folder_id, og_image } = req.body;
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
     }
     const tagsJson = tags !== undefined ? JSON.stringify(parseTags(tags)) : undefined;
+    // undefined keeps the stored image; '' (or an invalid URL) removes it.
+    const ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
 
     await query(
       `UPDATE businesses SET
@@ -350,9 +363,10 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          website     = COALESCE(?, website),
          email       = COALESCE(?, email),
          tags        = COALESCE(?, tags),
-         folder_id   = COALESCE(?, folder_id)
+         folder_id   = COALESCE(?, folder_id),
+         og_image    = COALESCE(?, og_image)
        WHERE id = ? AND user_id = ?`,
-      [title, description, website, email, tagsJson, folder_id || null, id, req.user.id]
+      [title, description, website, email, tagsJson, folder_id || null, ogImage, id, req.user.id]
     );
     const { rows: [row] } = await query(
       'SELECT * FROM businesses WHERE id = ? AND user_id = ?',
@@ -463,7 +477,13 @@ app.use((err, req, res, _next) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+// Additive, idempotent migrations run before accepting traffic. If they fail the
+// process exits, so Render keeps the previous deploy live.
+async function migrate() {
+  await query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
+}
+
+migrate().then(() => app.listen(PORT, () => {
   console.log(`✓ Sphir API running on http://localhost:${PORT}`);
   console.log('  Endpoints:');
   console.log('    POST   /api/v1/auth/sign_in');
@@ -478,4 +498,7 @@ app.listen(PORT, () => {
   console.log('    POST   /api/v1/businesses');
   console.log('    PUT    /api/v1/businesses/:id');
   console.log('    DELETE /api/v1/businesses/:id');
+})).catch((err) => {
+  console.error('Startup migration failed:', err);
+  process.exit(1);
 });

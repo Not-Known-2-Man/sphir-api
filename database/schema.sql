@@ -32,5 +32,9 @@ CREATE TABLE IF NOT EXISTS businesses (
   website     VARCHAR(500) NOT NULL DEFAULT '',
   email       VARCHAR(255) NOT NULL DEFAULT '',
   tags        JSONB        NOT NULL,
+  og_image    TEXT         NOT NULL DEFAULT '',
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+-- Additive upgrade for databases created before og_image existed.
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT '';
