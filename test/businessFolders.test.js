@@ -1,5 +1,7 @@
-// Route tests against a real, disposable Postgres database.
+// Route tests against a real, disposable Postgres database. They DROP and recreate every table.
 // Run: createdb sphir_test && SPHIR_TEST_DB=sphir_test npm test   (skipped when SPHIR_TEST_DB is unset)
+// The name must start with "sphir_test"; it is passed as DATABASE_URL so a DATABASE_URL in .env
+// (dotenv never overrides a variable that is already set) cannot redirect the tests elsewhere.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -8,9 +10,13 @@ const path = require('node:path');
 const testDb = process.env.SPHIR_TEST_DB;
 
 test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_DB not set' }, async (t) => {
-  delete process.env.DATABASE_URL;
-  process.env.DB_NAME = testDb;
+  assert.match(testDb, /^sphir_test\w*$/, 'SPHIR_TEST_DB must be a scratch database named sphir_test*');
+  const target = `postgres://localhost/${testDb}`;
+  process.env.DATABASE_URL = target;
   const { app, migrate, pool } = require('../server');
+  assert.equal(process.env.DATABASE_URL, target, 'DATABASE_URL changed after loading the server');
+  const { rows: [{ db }] } = await pool.query('SELECT current_database() AS db');
+  assert.equal(db, testDb, 'connected to the wrong database');
 
   await pool.query(`DROP TABLE IF EXISTS business_folders, businesses, folders, users CASCADE`);
   await pool.query(fs.readFileSync(path.join(__dirname, '..', 'database', 'schema.sql'), 'utf8'));
@@ -89,6 +95,25 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
   await t.test('invalid bodies are refused', async () => {
     assert.equal((await call(alice, 'PUT', `/businesses/${cardId}/folders`, {})).status, 422);
     assert.equal((await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: ['abc'] })).status, 422);
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: ['1; DROP TABLE users'] })).status, 422);
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: [99999999999] })).status, 422);
+  });
+
+  await t.test('an unknown card is 404', async () => {
+    assert.equal((await call(alice, 'PUT', '/businesses/987654/folders', { folder_ids: [f1] })).status, 404);
+  });
+
+  await t.test('a database connection failure answers 500 instead of hanging', async () => {
+    const original = pool.connect;
+    // pool.query() uses the callback form internally (auth keeps working); only the route's
+    // promise-form checkout fails.
+    pool.connect = (cb) => (cb ? original.call(pool, cb) : Promise.reject(new Error('no connection')));
+    try {
+      const res = await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: [f1] });
+      assert.equal(res.status, 500);
+    } finally {
+      pool.connect = original;
+    }
   });
 
   await t.test('another user cannot change the card collections', async () => {
@@ -104,6 +129,17 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     await call(alice, 'DELETE', `/folders/${f3}`);
     const card = (await call(alice, 'GET', '/users/get_businesses')).body.find(b => b.id === cardId);
     assert.deepEqual(card.folder_ids, [f2, f1]);
+  });
+
+  await t.test('deleting the primary folder leaves folder_id null and keeps the extras', async () => {
+    const fa = (await call(alice, 'POST', '/folders', { name: 'A' })).body.id;
+    const fb = (await call(alice, 'POST', '/folders', { name: 'B' })).body.id;
+    const card = (await call(alice, 'POST', '/businesses', { title: 'Two homes' })).body.id;
+    await call(alice, 'PUT', `/businesses/${card}/folders`, { folder_ids: [fa, fb] });
+    await call(alice, 'DELETE', `/folders/${fa}`);
+    const after = (await call(alice, 'GET', '/users/get_businesses')).body.find(b => b.id === card);
+    assert.equal(after.folder_id, null);
+    assert.deepEqual(after.folder_ids, [fb]);
   });
 
   await t.test('an empty list removes the card from every collection', async () => {

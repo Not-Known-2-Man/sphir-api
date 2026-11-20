@@ -411,8 +411,9 @@ app.put('/api/v1/businesses/:id/folders', authenticate, requireUser, async (req,
     return res.status(422).json({ error: 'folder_ids must be a list of folder ids' });
   }
   const folderIds = [...new Set(raw.map(Number))];
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     const { rows: owned } = await client.query(
       'SELECT id FROM folders WHERE user_id = $1 AND id = ANY($2::int[])', [req.user.id, folderIds]
     );
@@ -435,10 +436,10 @@ app.put('/api/v1/businesses/:id/folders', authenticate, requireUser, async (req,
     await client.query('COMMIT');
     res.json(await loadBusiness(id, req.user.id));
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client?.query('ROLLBACK').catch(() => {});
     next(err);
   } finally {
-    client.release();
+    client?.release();
   }
 });
 
@@ -553,16 +554,26 @@ app.use((err, req, res, _next) => {
 
 // Additive, idempotent migrations run before accepting traffic. If they fail the
 // process exits, so Render keeps the previous deploy live.
+// An advisory lock serializes instances that start at the same time during a deploy.
+const MIGRATION_LOCK = 734011;
+
 async function migrate() {
-  await query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
-  await query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT ''");
-  // Extra collections of a card; the primary one stays in businesses.folder_id.
-  await query(`CREATE TABLE IF NOT EXISTS business_folders (
-    business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-    folder_id   INT NOT NULL REFERENCES folders(id)    ON DELETE CASCADE,
-    position    INT NOT NULL DEFAULT 0,
-    PRIMARY KEY (business_id, folder_id)
-  )`);
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK]);
+    await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
+    await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT ''");
+    // Extra collections of a card; the primary one stays in businesses.folder_id.
+    await client.query(`CREATE TABLE IF NOT EXISTS business_folders (
+      business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+      folder_id   INT NOT NULL REFERENCES folders(id)    ON DELETE CASCADE,
+      position    INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (business_id, folder_id)
+    )`);
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]).catch(() => {});
+    client.release();
+  }
 }
 
 module.exports = { app, migrate, pool };
