@@ -132,8 +132,30 @@ function parseTags(raw) {
   return [];
 }
 
+// Display price such as "$29.99"; anything that is not a string is dropped.
+function sanitizePrice(raw) {
+  return typeof raw === 'string' ? raw.trim().slice(0, 50) : '';
+}
+
+// folder_ids lists every collection of the card: the primary folder_id first, then the extras.
 function formatBusiness(row) {
-  return { ...row, tags: parseTags(row.tags) };
+  const { extra_folder_ids, ...rest } = row;
+  const extras = (extra_folder_ids || []).filter(id => id !== row.folder_id);
+  return {
+    ...rest,
+    tags: parseTags(row.tags),
+    folder_ids: row.folder_id ? [row.folder_id, ...extras] : extras,
+  };
+}
+
+const BUSINESS_SELECT = `SELECT b.*, COALESCE(
+    (SELECT array_agg(bf.folder_id ORDER BY bf.position) FROM business_folders bf WHERE bf.business_id = b.id),
+    '{}') AS extra_folder_ids
+  FROM businesses b`;
+
+async function loadBusiness(id, userId) {
+  const { rows: [row] } = await query(`${BUSINESS_SELECT} WHERE b.id = ? AND b.user_id = ?`, [id, userId]);
+  return row && formatBusiness(row);
 }
 
 // Non-numeric or out-of-range ids can never match a row; answer 404 instead of a pg error.
@@ -321,7 +343,7 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
     const offset  = (page - 1) * perPage;
 
     const { rows } = await query(
-      'SELECT * FROM businesses WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
+      `${BUSINESS_SELECT} WHERE b.user_id = ? ORDER BY b.created_at DESC, b.id DESC LIMIT ? OFFSET ?`,
       [req.user.id, perPage, offset]
     );
     res.json(rows.map(formatBusiness));
@@ -332,7 +354,7 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
 app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next) => {
   try {
     const { title, description = '', website = '', email = '',
-            tags = [], folder_id = null, og_image } = req.body;
+            tags = [], folder_id = null, og_image, price } = req.body;
     if (!title) return res.status(422).json({ error: 'title is required' });
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
@@ -341,8 +363,8 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     const tagsJson = JSON.stringify(parseTags(tags));
 
     const { rows: [row] } = await query(
-      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image) VALUES (?,?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, title, description, website, email, tagsJson, sanitizeImageUrl(og_image)]
+      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *',
+      [req.user.id, folder_id || null, title, description, website, email, tagsJson, sanitizeImageUrl(og_image), sanitizePrice(price)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -352,13 +374,14 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, description, website, email, tags, folder_id, og_image } = req.body;
+    const { title, description, website, email, tags, folder_id, og_image, price } = req.body;
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
     }
     const tagsJson = tags !== undefined ? JSON.stringify(parseTags(tags)) : undefined;
     // undefined keeps the stored image; '' (or an invalid URL) removes it.
     const ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
+    const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
 
     await query(
       `UPDATE businesses SET
@@ -368,17 +391,55 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          email       = COALESCE(?, email),
          tags        = COALESCE(?, tags),
          folder_id   = COALESCE(?, folder_id),
-         og_image    = COALESCE(?, og_image)
+         og_image    = COALESCE(?, og_image),
+         price       = COALESCE(?, price)
        WHERE id = ? AND user_id = ?`,
-      [title, description, website, email, tagsJson, folder_id || null, ogImage, id, req.user.id]
+      [title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, id, req.user.id]
     );
-    const { rows: [row] } = await query(
-      'SELECT * FROM businesses WHERE id = ? AND user_id = ?',
-      [id, req.user.id]
-    );
-    if (!row) return res.status(404).json({ error: 'Business not found' });
-    res.json(formatBusiness(row));
+    const card = await loadBusiness(id, req.user.id);
+    if (!card) return res.status(404).json({ error: 'Business not found' });
+    res.json(card);
   } catch (err) { next(err); }
+});
+
+// PUT /api/v1/businesses/:id/folders  { folder_ids: [primary, ...extras] }
+// Replaces every collection of the card in one transaction; [] removes it from all of them.
+app.put('/api/v1/businesses/:id/folders', authenticate, requireUser, async (req, res, next) => {
+  const { id } = req.params;
+  const raw = req.body?.folder_ids;
+  if (!Array.isArray(raw) || raw.length > 50 || !raw.every(isValidId)) {
+    return res.status(422).json({ error: 'folder_ids must be a list of folder ids' });
+  }
+  const folderIds = [...new Set(raw.map(Number))];
+  const client = await pool.connect();
+  try {
+    const { rows: owned } = await client.query(
+      'SELECT id FROM folders WHERE user_id = $1 AND id = ANY($2::int[])', [req.user.id, folderIds]
+    );
+    if (owned.length !== folderIds.length) return res.status(422).json({ error: 'Folder not found' });
+
+    await client.query('BEGIN');
+    const updated = await client.query(
+      'UPDATE businesses SET folder_id = $1 WHERE id = $2 AND user_id = $3', [folderIds[0] ?? null, id, req.user.id]
+    );
+    if (!updated.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Business not found' });
+    }
+    await client.query('DELETE FROM business_folders WHERE business_id = $1', [id]);
+    for (const [position, folderId] of folderIds.slice(1).entries()) {
+      await client.query(
+        'INSERT INTO business_folders (business_id, folder_id, position) VALUES ($1, $2, $3)', [id, folderId, position]
+      );
+    }
+    await client.query('COMMIT');
+    res.json(await loadBusiness(id, req.user.id));
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
 });
 
 // DELETE /api/v1/businesses/:id
@@ -494,9 +555,19 @@ app.use((err, req, res, _next) => {
 // process exits, so Render keeps the previous deploy live.
 async function migrate() {
   await query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
+  await query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT ''");
+  // Extra collections of a card; the primary one stays in businesses.folder_id.
+  await query(`CREATE TABLE IF NOT EXISTS business_folders (
+    business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+    folder_id   INT NOT NULL REFERENCES folders(id)    ON DELETE CASCADE,
+    position    INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (business_id, folder_id)
+  )`);
 }
 
-migrate().then(() => app.listen(PORT, () => {
+module.exports = { app, migrate, pool };
+
+if (require.main === module) migrate().then(() => app.listen(PORT, () => {
   console.log(`✓ Sphir API running on http://localhost:${PORT}`);
   console.log('  Endpoints:');
   console.log('    POST   /api/v1/auth/sign_in');
@@ -511,6 +582,9 @@ migrate().then(() => app.listen(PORT, () => {
   console.log('    POST   /api/v1/businesses');
   console.log('    PUT    /api/v1/businesses/:id');
   console.log('    DELETE /api/v1/businesses/:id');
+  console.log('    PUT    /api/v1/businesses/:id/folders');
+  console.log('    GET    /api/v1/preview');
+  console.log('    POST   /api/v1/preview');
 })).catch((err) => {
   console.error('Startup migration failed:', err);
   process.exit(1);

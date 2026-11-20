@@ -33,8 +33,18 @@ CREATE TABLE IF NOT EXISTS businesses (
   email       VARCHAR(255) NOT NULL DEFAULT '',
   tags        JSONB        NOT NULL,
   og_image    TEXT         NOT NULL DEFAULT '',
+  price       TEXT         NOT NULL DEFAULT '',
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
--- Additive upgrade for databases created before og_image existed.
+-- Additive upgrades for databases created before og_image and price existed.
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT '';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT '';
+
+-- Extra collections of a card; the primary one stays in businesses.folder_id.
+CREATE TABLE IF NOT EXISTS business_folders (
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  folder_id   INT NOT NULL REFERENCES folders(id)    ON DELETE CASCADE,
+  position    INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (business_id, folder_id)
+);
