@@ -17,6 +17,7 @@ const dns     = require('dns');
 const http    = require('http');
 const https   = require('https');
 const net     = require('net');
+const { extractMetadata } = require('./lib/extractMetadata');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -24,7 +25,10 @@ const PORT = process.env.PORT || 3000;
 // ── Middleware ────────────────────────────────────────────────────────────────
 
 app.use(cors());
-app.use(express.json());
+// POST /api/v1/preview carries a page's HTML, so it gets its own larger body limit.
+const jsonBody = express.json();
+const previewBody = express.json({ limit: '2mb' });
+app.use((req, res, next) => (req.path === '/api/v1/preview' ? previewBody : jsonBody)(req, res, next));
 
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.url}`);
@@ -441,7 +445,6 @@ const previewAgents = {
 app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
   try {
     const axios   = require('axios');
-    const cheerio = require('cheerio');
     const { url } = req.query;
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
     assertPublicUrl(url);
@@ -455,13 +458,23 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
         assertPublicUrl(`${options.protocol}//${options.hostname}`);
       },
     });
-    const $ = cheerio.load(response.data);
-    res.json({
-      title:       $('meta[property="og:title"]').attr('content')       || $('title').text()                                          || '',
-      description: $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content')              || '',
-      image:       $('meta[property="og:image"]').attr('content')       || '',
-      url,
-    });
+    const finalUrl = response.request?.res?.responseUrl || url;
+    res.json(extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl));
+  } catch (e) {
+    res.status(422).json({ error: 'Could not fetch metadata' });
+  }
+});
+
+// The iOS share extension already has the page the user is looking at (including sites that
+// block server fetches), so it sends the HTML and the server only extracts; nothing is fetched.
+app.post('/api/v1/preview', authenticate, requireUser, (req, res) => {
+  const { url, html } = req.body || {};
+  if (!url || typeof url !== 'string' || typeof html !== 'string') {
+    return res.status(400).json({ error: 'URL and HTML required' });
+  }
+  try {
+    assertPublicUrl(url);
+    res.json(extractMetadata(html, url));
   } catch (e) {
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
