@@ -532,6 +532,7 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
       meta = extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl);
     } catch (e) {
       if (!isYouTube) throw e;
+      console.warn(`[preview] page fetch failed: ${e.response?.status || e.code || e.message}`);
     }
     // YouTube blocks every youtube.com request from Render (page and oEmbed), so the public
     // noembed.com proxy of the same oEmbed data is the last resort.
@@ -544,13 +545,17 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
             headers: { 'User-Agent': 'Mozilla/5.0' },
           });
           meta = mapOembed(oembed.data, url);
-        } catch { meta = null; }
+        } catch (err) {
+          console.warn(`[preview] ${endpoint} failed: ${err.response?.status || err.code || err.message}`);
+          meta = null;
+        }
         if (meta?.title) break;
       }
       if (!meta?.title) throw new Error('Empty oEmbed');
     }
     res.json(meta);
   } catch (e) {
+    console.warn(`[preview] GET ${req.query.url} failed: ${e.response?.status || e.code || e.message}`);
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
 });
