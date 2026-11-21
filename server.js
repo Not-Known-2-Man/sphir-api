@@ -533,15 +533,21 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     } catch (e) {
       if (!isYouTube) throw e;
     }
-    // YouTube blocks server fetches from some hosts (Render): oEmbed still has the real data.
+    // YouTube blocks every youtube.com request from Render (page and oEmbed), so the public
+    // noembed.com proxy of the same oEmbed data is the last resort.
     if (isYouTube && (!meta || !meta.title)) {
-      const oembed = await axios.get('https://www.youtube.com/oembed', {
-        ...limits,
-        params: { url, format: 'json' },
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-      });
-      meta = mapOembed(oembed.data, url);
-      if (!meta.title) throw new Error('Empty oEmbed');
+      for (const endpoint of ['https://www.youtube.com/oembed', 'https://noembed.com/embed']) {
+        try {
+          const oembed = await axios.get(endpoint, {
+            ...limits,
+            params: { url, format: 'json' },
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+          });
+          meta = mapOembed(oembed.data, url);
+        } catch { meta = null; }
+        if (meta?.title) break;
+      }
+      if (!meta?.title) throw new Error('Empty oEmbed');
     }
     res.json(meta);
   } catch (e) {
