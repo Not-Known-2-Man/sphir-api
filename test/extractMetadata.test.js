@@ -56,6 +56,16 @@ test('Recipe and VideoObject JSON-LD types', () => {
   assert.equal(extractMetadata(page(ld({ '@type': 'VideoObject', name: 'Walk' })), 'https://v.com/w').type, 'video');
 });
 
+test('a page video does not override its Recipe or Product node (bbcgoodfood lists VideoObject first)', () => {
+  const recipe = page(ld({ '@type': 'VideoObject', name: 'How to' }) + ld({ '@type': 'Recipe', name: 'Easy pancakes', keywords: 'Breakfast' }));
+  const meta = extractMetadata(recipe, 'https://www.bbcgoodfood.com/recipes/easy-pancakes');
+  assert.equal(meta.type, 'recipe');
+  assert.equal(meta.title, 'Easy pancakes');
+  assert.deepEqual(meta.tags, ['Breakfast']);
+  const product = page(ld([{ '@type': 'VideoObject', name: 'Demo' }, { '@type': 'Product', name: 'Shoe', offers: { price: '77', priceCurrency: 'USD' } }]));
+  assert.equal(extractMetadata(product, 'https://shop.com/shoe').type, 'product');
+});
+
 test('NewsArticle inside @graph is an article with published date', () => {
   const html = page(ld({ '@context': 'https://schema.org', '@graph': [
     { '@type': 'WebSite', name: 'Site' },
@@ -125,6 +135,11 @@ test('published from article:published_time meta', () => {
 test('relative images resolve against the final URL and non-http images are dropped', () => {
   assert.equal(extractMetadata(page('<meta property="og:image" content="/img/c.jpg">'), 'https://n.com/a/b').image, 'https://n.com/img/c.jpg');
   assert.equal(extractMetadata(page('<meta property="og:image" content="data:image/png;base64,AAA">'), 'https://n.com/a').image, '');
+});
+
+test('http images are upgraded to https because iOS blocks plain http (allbirds og:image)', () => {
+  assert.equal(extractMetadata(page('<meta property="og:image" content="http://www.allbirds.com/cdn/shop/a.png">'), 'https://www.allbirds.com/p').image, 'https://www.allbirds.com/cdn/shop/a.png');
+  assert.equal(extractMetadata(page('<meta property="og:image" content="/img/c.jpg">'), 'http://n.com/a').image, 'https://n.com/img/c.jpg');
 });
 
 test('image falls back to JSON-LD ImageObject then twitter:image', () => {
