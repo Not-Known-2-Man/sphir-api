@@ -18,6 +18,7 @@ const http    = require('http');
 const https   = require('https');
 const net     = require('net');
 const { extractMetadata } = require('./lib/extractMetadata');
+const { mapOembed } = require('./lib/oembed');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
