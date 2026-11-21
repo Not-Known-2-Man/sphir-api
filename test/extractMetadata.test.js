@@ -109,7 +109,16 @@ test('domain rules classify video and social links', () => {
 
 test('og:type wins over domain rules', () => {
   const html = page('<meta property="og:type" content="article">');
-  assert.equal(extractMetadata(html, 'https://www.facebook.com/notes/1').type, 'article');
+  assert.equal(extractMetadata(html, 'https://news.com/notes/1').type, 'article');
+});
+
+test('social hosts are social even when og:type or JSON-LD says article', () => {
+  const og = page('<meta property="og:type" content="article">');
+  assert.equal(extractMetadata(og, 'https://www.instagram.com/reel/DfxT1KYOrxr/').type, 'social');
+  assert.equal(extractMetadata(og, 'https://x.com/user/status/123').type, 'social');
+  assert.equal(extractMetadata(og, 'https://m.facebook.com/notes/1').type, 'social');
+  assert.equal(extractMetadata(og, 'https://www.threads.net/@u/post/1').type, 'social');
+  assert.equal(extractMetadata(page(ld({ '@type': 'Article', headline: 'h' })), 'https://twitter.com/u/status/1').type, 'social');
 });
 
 test('tags: keywords array, article:tag metas, dedupe, strip underscore, max 8', () => {

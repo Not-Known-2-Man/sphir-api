@@ -510,18 +510,40 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     const { url } = req.query;
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
     assertPublicUrl(url);
-    const response = await axios.get(url, {
+    const limits = {
       ...previewAgents,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
       timeout: 5000,
       maxRedirects: 3,
       maxContentLength: 2 * 1024 * 1024,
       beforeRedirect: (options) => {
         assertPublicUrl(`${options.protocol}//${options.hostname}`);
       },
-    });
-    const finalUrl = response.request?.res?.responseUrl || url;
-    res.json(extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl));
+    };
+    const host = new URL(url).hostname.toLowerCase();
+    const isYouTube = ['youtube.com', 'youtu.be'].some(d => host === d || host.endsWith(`.${d}`));
+    const isInstagram = host === 'instagram.com' || host.endsWith('.instagram.com');
+    let meta = null;
+    try {
+      const response = await axios.get(url, {
+        ...limits,
+        headers: { 'User-Agent': isInstagram ? 'facebookexternalhit/1.1' : 'Mozilla/5.0' },
+      });
+      const finalUrl = response.request?.res?.responseUrl || url;
+      meta = extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl);
+    } catch (e) {
+      if (!isYouTube) throw e;
+    }
+    // YouTube blocks server fetches from some hosts (Render): oEmbed still has the real data.
+    if (isYouTube && (!meta || !meta.title)) {
+      const oembed = await axios.get('https://www.youtube.com/oembed', {
+        ...limits,
+        params: { url, format: 'json' },
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
+      meta = mapOembed(oembed.data, url);
+      if (!meta.title) throw new Error('Empty oEmbed');
+    }
+    res.json(meta);
   } catch (e) {
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
