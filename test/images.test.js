@@ -140,4 +140,26 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.notEqual(res.status, 201);
     assert.equal(res.status, 500); // body-parser's 413 reaches the generic error handler, as before
   });
+
+  await t.test('POST /images returns 400 for malformed JSON body without logging', async (st) => {
+    const logged = st.mock.method(console, 'error', () => {});
+    const res = await fetch(`${base}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"data": "invalid json',
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: 'Invalid JSON body' });
+    assert.equal(logged.mock.callCount(), 0);
+  });
+
+  await t.test('POST /images returns 422 with existing message for oversized body', async () => {
+    const res = await fetch(`${base}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) }),
+    });
+    assert.equal(res.status, 422);
+    assert.deepEqual(await res.json(), { error: 'Image too large (max 2 MB)' });
+  });
 });

@@ -166,4 +166,16 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.equal(body.folder_id, f4);
     assert.deepEqual(body.folder_ids, [f4, f2]);
   });
+
+  await t.test('POST /businesses returns 400 for malformed JSON body without logging', async (st) => {
+    const logged = st.mock.method(console, 'error', () => {});
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"title": "invalid json',
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: 'Invalid JSON body' });
+    assert.equal(logged.mock.callCount(), 0);
+  });
 });

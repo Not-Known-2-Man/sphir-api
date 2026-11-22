@@ -644,6 +644,9 @@ app.get('/api/v1/images/:imageId', async (req, res, next) => {
 
 // Registered after every route so next(err) reaches it; details stay in the logs.
 app.use((err, req, res, _next) => {
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });
