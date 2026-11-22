@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const testDb = process.env.SPHIR_TEST_DB && `${process.env.SPHIR_TEST_DB}_images`;
 
@@ -161,5 +162,40 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     });
     assert.equal(res.status, 422);
     assert.deepEqual(await res.json(), { error: 'Image too large (max 2 MB)' });
+  });
+
+  await t.test('POST /images rejects upload when user reaches 100 images limit', async () => {
+    const { rows: [{ id: userId }] } = await pool.query('SELECT id FROM users WHERE token = $1', [su.token]);
+    const { rows: [{ n: currentCount }] } = await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [userId]);
+    const params = [userId, JPEG];
+    const chunks = [];
+    for (let i = currentCount; i < 99; i++) {
+      params.push(crypto.randomUUID());
+      chunks.push(`($${params.length}, $1, 'image/jpeg', $2)`);
+    }
+    if (chunks.length > 0) {
+      await pool.query(`INSERT INTO images (id, user_id, mime, data) VALUES ${chunks.join(',')}`, params);
+    }
+    const ok = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(ok.status, 201);
+
+    const before = await count();
+    const rejected = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(rejected.status, 422);
+    assert.deepEqual(rejected.body, { error: 'Image limit reached (100 per account)' });
+    assert.equal(await count(), before);
+  });
+
+  await t.test('image limit is per user; another user with 0 images can upload', async () => {
+    const res2 = await fetch(`${base}/auth/sign_up`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'img.user2@example.com', password: 'Passw0rd!x', password_confirmation: 'Passw0rd!x', first_name: 'QA2', last_name: 'T2' }),
+    });
+    const su2 = await res2.json();
+    const auth2 = { Authorization: `Bearer ${su2.token}`, uid: su2.uid, 'Content-Type': 'application/json' };
+    const { status, body } = await upload({ data: dataUrl('image/jpeg', JPEG) }, auth2);
+    assert.equal(status, 201);
+    assert.match(body.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 });

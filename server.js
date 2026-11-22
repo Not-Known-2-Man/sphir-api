@@ -33,6 +33,7 @@ const previewBody = express.json({ limit: '2mb' });
 // POST /api/v1/images carries a 2 MB image as base64 (~2.8 MB). Only that route gets the larger limit;
 // a body over it is a validation error (422), like an image over 2 MB that fits.
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_IMAGES_PER_USER = 100;
 const imageBody = express.json({ limit: '3mb' });
 const imageBodyOr422 = (req, res, next) => imageBody(req, res, (err) => {
   if (err && err.type === 'entity.too.large') return res.status(422).json({ error: 'Image too large (max 2 MB)' });
@@ -622,6 +623,8 @@ app.post('/api/v1/images', authenticate, requireUser, async (req, res, next) => 
     const bytes = Buffer.from(m[2], 'base64');
     if (bytes.length > MAX_IMAGE_BYTES) return reject('Image too large (max 2 MB)');
     if (!IMAGE_MAGIC[mime](bytes)) return reject('Image content does not match its type');
+    const { rows: [{ n }] } = await query('SELECT count(*)::int AS n FROM images WHERE user_id = ?', [req.user.id]);
+    if (n >= MAX_IMAGES_PER_USER) return reject('Image limit reached (100 per account)');
     const id = uuidv4();
     await query('INSERT INTO images (id, user_id, mime, data) VALUES (?, ?, ?, ?)', [id, req.user.id, mime, bytes]);
     res.status(201).json({ id, url: `${publicApiBase(req)}/api/v1/images/${id}` });
