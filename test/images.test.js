@@ -420,6 +420,18 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.deepEqual(Buffer.from(await get.arrayBuffer()), PNG);
   });
 
+  await t.test('an image referenced with an uppercase uuid is kept when the last lowercase reference goes away', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+    const upper = up.body.url.replace(up.body.id, up.body.id.toUpperCase());
+    const make = async (og_image) => (await (await fetch(`${base}/businesses`, { method: 'POST', headers: auth, body: JSON.stringify({ title: 'Case', og_image }) })).json()).id;
+    await make(upper);
+    const lower = await make(up.body.url);
+    const del = await fetch(`${base}/businesses/${lower}`, { method: 'DELETE', headers: auth });
+    assert.equal(del.status, 200);
+    assert.equal((await fetch(`${base}/images/${up.body.id}`)).status, 200);
+  });
+
   await t.test('PUT /businesses/:id of a missing card with Instagram og_image returns 404 and fetches nothing', async (st) => {
     const axios = require('axios');
     const mock = st.mock.method(axios, 'get', async () => ({ data: JPEG }));

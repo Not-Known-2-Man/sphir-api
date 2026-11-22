@@ -662,7 +662,7 @@ async function deleteImageIfOrphan(ogImage, userId) {
   if (!m) return;
   const id = m[1].toLowerCase();
   await query(
-    'DELETE FROM images WHERE id = ?::uuid AND user_id = ? AND NOT EXISTS (SELECT 1 FROM businesses WHERE og_image LIKE \'%/api/v1/images/\' || ?::text || \'%\')',
+    'DELETE FROM images WHERE id = ?::uuid AND user_id = ? AND NOT EXISTS (SELECT 1 FROM businesses WHERE og_image ILIKE \'%/api/v1/images/\' || ?::text || \'%\')',
     [id, userId, id]
   );
 }
