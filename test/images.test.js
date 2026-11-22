@@ -433,6 +433,76 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.equal(await count(), before);
   });
 
+  await t.test('GET /preview plain page: 200 with title and image', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => ({
+      data: '<html><head><meta property="og:title" content="Lamp"><meta property="og:image" content="https://shop.example.com/lamp.jpg"></head></html>',
+      request: { res: { responseUrl: 'https://shop.example.com/p/1' } },
+    }));
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://shop.example.com/p/1')}`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'Lamp');
+    assert.equal(body.image, 'https://shop.example.com/lamp.jpg');
+  });
+
+  await t.test('GET /preview YouTube oEmbed fallback: 200 with title and 3 axios calls', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => {
+      if (url === 'https://noembed.com/embed') {
+        return {
+          data: {
+            title: 'Cat video',
+            thumbnail_url: 'https://i.ytimg.com/vi/abc/hqdefault.jpg',
+            author_name: 'Cats',
+          },
+        };
+      }
+      throw new Error(`Fetch failed for ${url}`);
+    });
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://www.youtube.com/watch?v=abc')}`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'Cat video');
+    assert.equal(mock.mock.callCount(), 3);
+  });
+
+  await t.test('GET /preview fetch failure on a non-YouTube page: 422', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => {
+      throw new Error('Network error');
+    });
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://shop.example.com/fail')}`, { headers: auth });
+    assert.equal(res.status, 422);
+    assert.deepEqual(await res.json(), { error: 'Could not fetch metadata' });
+  });
+
+  await t.test('GET /preview missing url: 400', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => {});
+    const res = await fetch(`${base}/preview`, { headers: auth });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: 'URL required' });
+    assert.equal(mock.mock.callCount(), 0);
+  });
+
+  await t.test('GET /preview private address http://127.0.0.1/: 422', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => {});
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('http://127.0.0.1/')}`, { headers: auth });
+    assert.equal(res.status, 422);
+    assert.deepEqual(await res.json(), { error: 'Could not fetch metadata' });
+    assert.equal(mock.mock.callCount(), 0);
+  });
+
+  await t.test('GET /preview no auth headers: 401', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (url, opts) => {});
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://shop.example.com/p/1')}`);
+    assert.equal(res.status, 401);
+    assert.equal(mock.mock.callCount(), 0);
+  });
+
   await t.test('POST /images rejects upload when user reaches 100 images limit', async () => {
     const { rows: [{ id: userId }] } = await pool.query('SELECT id FROM users WHERE token = $1', [su.token]);
     const { rows: [{ n: currentCount }] } = await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [userId]);
