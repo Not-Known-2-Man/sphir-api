@@ -19,7 +19,7 @@ const https   = require('https');
 const net     = require('net');
 const { extractMetadata, shorten } = require('./lib/extractMetadata');
 const MAX_TITLE = 255; // businesses.title is VARCHAR(255)
-const { mapOembed } = require('./lib/oembed');
+const { mapOembed, mapTweetOembed } = require('./lib/oembed');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -565,17 +565,34 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     const host = new URL(url).hostname.toLowerCase();
     const isYouTube = ['youtube.com', 'youtu.be'].some(d => host === d || host.endsWith(`.${d}`));
     const isInstagram = host === 'instagram.com' || host.endsWith('.instagram.com');
+    const isTwitterHost = /^(?:(?:www|mobile)\.)?(?:x|twitter)\.com$/i.test(host);
+    const isTwitterPost = isTwitterHost && /^\/[^/]+\/status\/\d+\/?$/i.test(new URL(url).pathname);
     let meta = null;
-    try {
-      const response = await axios.get(url, {
-        ...limits,
-        headers: { 'User-Agent': isInstagram ? 'facebookexternalhit/1.1' : 'Mozilla/5.0' },
-      });
-      const finalUrl = response.request?.res?.responseUrl || url;
-      meta = extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl);
-    } catch (e) {
-      if (!isYouTube) throw e;
-      console.warn(`[preview] page fetch failed: ${e.response?.status || e.code || e.message}`);
+    if (isTwitterPost) {
+      try {
+        const oembed = await axios.get('https://publish.twitter.com/oembed', {
+          ...limits,
+          params: { url, omit_script: 1 },
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        meta = mapTweetOembed(oembed.data, url);
+      } catch (err) {
+        console.warn(`[preview] twitter oembed failed: ${err.response?.status || err.code || err.message}`);
+        meta = null;
+      }
+    }
+    if (!meta || !meta.title) {
+      try {
+        const response = await axios.get(url, {
+          ...limits,
+          headers: { 'User-Agent': isInstagram ? 'facebookexternalhit/1.1' : 'Mozilla/5.0' },
+        });
+        const finalUrl = response.request?.res?.responseUrl || url;
+        meta = extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl);
+      } catch (e) {
+        if (!isYouTube) throw e;
+        console.warn(`[preview] page fetch failed: ${e.response?.status || e.code || e.message}`);
+      }
     }
     // YouTube blocks every youtube.com request from Render (page and oEmbed), so the public
     // noembed.com proxy of the same oEmbed data is the last resort.

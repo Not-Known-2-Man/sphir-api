@@ -503,6 +503,71 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.equal(mock.mock.callCount(), 0);
   });
 
+  await t.test('GET /preview uses Twitter oEmbed first without fetching x.com page', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (u, opts) => {
+      if (u === 'https://publish.twitter.com/oembed') {
+        assert.equal(opts?.params?.url, 'https://x.com/jack/status/20');
+        assert.equal(opts?.params?.omit_script, 1);
+        return {
+          data: {
+            url: 'https://x.com/jack/status/20',
+            author_name: 'jack',
+            author_url: 'https://x.com/jack',
+            html: '<blockquote class="twitter-tweet"><p lang="en" dir="ltr">just setting up my twttr</p>&mdash; jack (@jack) <a href="https://x.com/jack/status/20?ref_src=twsrc%5Etfw">March 21, 2006</a></blockquote>\n\n',
+          },
+        };
+      }
+      throw new Error(`Unexpected fetch to ${u}`);
+    });
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://x.com/jack/status/20')}`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'just setting up my twttr');
+    assert.equal(body.description, '@jack on X');
+    assert.equal(body.type, 'social');
+    assert.equal(mock.mock.callCount(), 1);
+  });
+
+  await t.test('GET /preview falls back to page fetch when Twitter oEmbed rejects', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (u, opts) => {
+      if (u === 'https://publish.twitter.com/oembed') {
+        throw new Error('Twitter oEmbed service unavailable');
+      }
+      if (u === 'https://x.com/jack/status/20') {
+        return {
+          data: '<html><head><meta property="og:title" content="jack (@jack) on X"></head></html>',
+          request: { res: { responseUrl: 'https://x.com/jack/status/20' } },
+        };
+      }
+      throw new Error(`Unexpected fetch to ${u}`);
+    });
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://x.com/jack/status/20')}`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'jack (@jack) on X');
+    assert.equal(mock.mock.callCount(), 2);
+  });
+
+  await t.test('GET /preview non-X URL never calls publish.twitter.com', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async (u, opts) => {
+      return {
+        data: '<html><head><meta property="og:title" content="Example Shop"></head></html>',
+        request: { res: { responseUrl: u } },
+      };
+    });
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://shop.example.com/item/1')}`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'Example Shop');
+    assert.ok(mock.mock.callCount() >= 1);
+    for (const call of mock.mock.calls) {
+      assert.notEqual(call.arguments[0], 'https://publish.twitter.com/oembed');
+    }
+  });
+
   await t.test('POST /images rejects upload when user reaches 100 images limit', async () => {
     const { rows: [{ id: userId }] } = await pool.query('SELECT id FROM users WHERE token = $1', [su.token]);
     const { rows: [{ n: currentCount }] } = await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [userId]);
