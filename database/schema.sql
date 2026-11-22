@@ -48,3 +48,12 @@ CREATE TABLE IF NOT EXISTS business_folders (
   position    INT NOT NULL DEFAULT 0,
   PRIMARY KEY (business_id, folder_id)
 );
+
+-- Images uploaded from the web (POST /api/v1/images); served publicly by random UUID.
+CREATE TABLE IF NOT EXISTS images (
+  id         UUID PRIMARY KEY,
+  user_id    INT  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mime       TEXT NOT NULL,
+  data       BYTEA NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

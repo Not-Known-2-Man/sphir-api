@@ -30,7 +30,19 @@ app.use(cors());
 // POST /api/v1/preview carries a page's HTML, so it gets its own larger body limit.
 const jsonBody = express.json();
 const previewBody = express.json({ limit: '2mb' });
-app.use((req, res, next) => (req.path === '/api/v1/preview' ? previewBody : jsonBody)(req, res, next));
+// POST /api/v1/images carries a 2 MB image as base64 (~2.8 MB). Only that route gets the larger limit;
+// a body over it is a validation error (422), like an image over 2 MB that fits.
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+const imageBody = express.json({ limit: '3mb' });
+const imageBodyOr422 = (req, res, next) => imageBody(req, res, (err) => {
+  if (err && err.type === 'entity.too.large') return res.status(422).json({ error: 'Image too large (max 2 MB)' });
+  next(err);
+});
+app.use((req, res, next) => {
+  if (req.path === '/api/v1/preview') return previewBody(req, res, next);
+  if (req.path === '/api/v1/images' && req.method === 'POST') return imageBodyOr422(req, res, next);
+  return jsonBody(req, res, next);
+});
 
 app.use((req, res, next) => {
   console.log(`[REQ] ${req.method} ${req.url}`);
@@ -577,6 +589,57 @@ app.post('/api/v1/preview', authenticate, requireUser, (req, res) => {
   }
 });
 
+// ── Images ────────────────────────────────────────────────────────────────────
+
+const IMAGE_MAGIC = {
+  'image/jpeg': (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png':  (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/webp': (b) => b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP',
+};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Public base URL of this API: PUBLIC_API_URL if set, else derived from the proxy headers.
+// Always https on Render (RENDER is set there), whatever the proxy forwarded.
+function publicApiBase(req) {
+  if (process.env.PUBLIC_API_URL) return process.env.PUBLIC_API_URL.replace(/\/+$/, '');
+  const first = (v) => String(v || '').split(',')[0].trim();
+  const proto = process.env.RENDER ? 'https' : (first(req.headers['x-forwarded-proto']) === 'https' ? 'https' : req.protocol);
+  const host = first(req.headers['x-forwarded-host']) || req.get('host');
+  return `${proto}://${host}`;
+}
+
+// POST /api/v1/images  { data: "data:image/jpeg;base64,..." } -> 201 { id, url }
+app.post('/api/v1/images', authenticate, requireUser, async (req, res, next) => {
+  const reject = (error) => res.status(422).json({ error });
+  try {
+    const raw = req.body && req.body.data;
+    if (typeof raw !== 'string') return reject('Image data required');
+    const m = /^data:([a-zA-Z0-9.+\/-]+);base64,([A-Za-z0-9+\/]*={0,2})$/.exec(raw);
+    if (!m) return reject('Invalid image data');
+    const mime = m[1].toLowerCase();
+    if (!IMAGE_MAGIC[mime]) return reject('Unsupported image type (use JPEG, PNG or WebP)');
+    if (m[2].length % 4 !== 0) return reject('Invalid image data');
+    const bytes = Buffer.from(m[2], 'base64');
+    if (bytes.length > MAX_IMAGE_BYTES) return reject('Image too large (max 2 MB)');
+    if (!IMAGE_MAGIC[mime](bytes)) return reject('Image content does not match its type');
+    const id = uuidv4();
+    await query('INSERT INTO images (id, user_id, mime, data) VALUES (?, ?, ?, ?)', [id, req.user.id, mime, bytes]);
+    res.status(201).json({ id, url: `${publicApiBase(req)}/api/v1/images/${id}` });
+  } catch (err) { next(err); }
+});
+
+// GET /api/v1/images/:id — public: <img> tags cannot send auth headers; the id is an unguessable UUID.
+app.get('/api/v1/images/:imageId', async (req, res, next) => {
+  try {
+    res.set('X-Content-Type-Options', 'nosniff');
+    if (!UUID_RE.test(req.params.imageId)) return res.status(404).json({ error: 'Not found' });
+    const { rows } = await query('SELECT mime, data FROM images WHERE id = ?', [req.params.imageId.toLowerCase()]);
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.set({ 'Content-Type': rows[0].mime, 'Cache-Control': 'public, max-age=31536000, immutable' });
+    res.send(rows[0].data);
+  } catch (err) { next(err); }
+});
+
 // ── Error handler ─────────────────────────────────────────────────────────────
 
 // Registered after every route so next(err) reaches it; details stay in the logs.
@@ -605,6 +668,14 @@ async function migrate() {
       position    INT NOT NULL DEFAULT 0,
       PRIMARY KEY (business_id, folder_id)
     )`);
+    // Images uploaded from the web (POST /api/v1/images); served publicly by random UUID.
+    await client.query(`CREATE TABLE IF NOT EXISTS images (
+      id         UUID PRIMARY KEY,
+      user_id    INT  NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      mime       TEXT NOT NULL,
+      data       BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
   } finally {
     await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]).catch(() => {});
     client.release();
@@ -631,6 +702,8 @@ if (require.main === module) migrate().then(() => app.listen(PORT, () => {
   console.log('    PUT    /api/v1/businesses/:id/folders');
   console.log('    GET    /api/v1/preview');
   console.log('    POST   /api/v1/preview');
+  console.log('    POST   /api/v1/images');
+  console.log('    GET    /api/v1/images/:id  (public)');
 })).catch((err) => {
   console.error('Startup migration failed:', err);
   process.exit(1);
