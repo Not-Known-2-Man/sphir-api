@@ -75,6 +75,18 @@ test('long titles (Instagram captions) are shortened to 200 characters with an e
   assert.equal(extractMetadata(page('<title>Short</title>'), 'https://a.com').title, 'Short');
 });
 
+test('a YouTube page without og:image (m.youtube.com from Safari) gets the video thumbnail', () => {
+  const bare = page('<title>Big Buck Bunny</title>');
+  const thumb = 'https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg';
+  assert.equal(extractMetadata(bare, 'https://m.youtube.com/watch?v=aqz-KE-bpKQ&ra=m').image, thumb);
+  assert.equal(extractMetadata(bare, 'https://youtu.be/aqz-KE-bpKQ').image, thumb);
+  assert.equal(extractMetadata(bare, 'https://www.youtube.com/shorts/aqz-KE-bpKQ').image, thumb);
+  assert.equal(extractMetadata(bare, 'https://www.youtube.com/@channel').image, '');
+  const withOg = page('<meta property="og:image" content="https://i.ytimg.com/vi/x/maxres.jpg">');
+  assert.equal(extractMetadata(withOg, 'https://www.youtube.com/watch?v=aqz-KE-bpKQ').image, 'https://i.ytimg.com/vi/x/maxres.jpg');
+  assert.equal(extractMetadata(bare, 'https://example.com/watch?v=aqz-KE-bpKQ').image, '');
+});
+
 test('NewsArticle inside @graph is an article with published date', () => {
   const html = page(ld({ '@context': 'https://schema.org', '@graph': [
     { '@type': 'WebSite', name: 'Site' },
