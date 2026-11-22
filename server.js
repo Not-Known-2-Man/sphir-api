@@ -398,6 +398,11 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     const ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
     const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
 
+    const { rows: [cur] } = await query(
+      'SELECT og_image FROM businesses WHERE id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
+
     await query(
       `UPDATE businesses SET
          title       = COALESCE(?, title),
@@ -413,6 +418,15 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     );
     const card = await loadBusiness(id, req.user.id);
     if (!card) return res.status(404).json({ error: 'Business not found' });
+
+    if (og_image !== undefined && cur && cur.og_image !== card.og_image) {
+      try {
+        await deleteImageIfOrphan(cur.og_image, req.user.id);
+      } catch (cleanupErr) {
+        console.warn(`[images] orphan cleanup failed: ${cleanupErr?.message || cleanupErr}`);
+      }
+    }
+
     res.json(card);
   } catch (err) { next(err); }
 });
@@ -463,10 +477,15 @@ app.delete('/api/v1/businesses/:id', authenticate, requireUser, async (req, res,
   try {
     const { id } = req.params;
     const result = await query(
-      'DELETE FROM businesses WHERE id = ? AND user_id = ?',
+      'DELETE FROM businesses WHERE id = ? AND user_id = ? RETURNING og_image',
       [id, req.user.id]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Business not found' });
+    try {
+      await deleteImageIfOrphan(result.rows[0].og_image, req.user.id);
+    } catch (cleanupErr) {
+      console.warn(`[images] orphan cleanup failed: ${cleanupErr?.message || cleanupErr}`);
+    }
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -607,6 +626,19 @@ function publicApiBase(req) {
   const proto = process.env.RENDER ? 'https' : (first(req.headers['x-forwarded-proto']) === 'https' ? 'https' : req.protocol);
   const host = first(req.headers['x-forwarded-host']) || req.get('host');
   return `${proto}://${host}`;
+}
+
+const IMAGE_URL_RE = /\/api\/v1\/images\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[?#].*)?$/i;
+
+async function deleteImageIfOrphan(ogImage, userId) {
+  if (typeof ogImage !== 'string' || !ogImage) return;
+  const m = IMAGE_URL_RE.exec(ogImage);
+  if (!m) return;
+  const id = m[1].toLowerCase();
+  await query(
+    'DELETE FROM images WHERE id = ?::uuid AND user_id = ? AND NOT EXISTS (SELECT 1 FROM businesses WHERE og_image LIKE \'%/api/v1/images/\' || ?::text || \'%\')',
+    [id, userId, id]
+  );
 }
 
 // POST /api/v1/images  { data: "data:image/jpeg;base64,..." } -> 201 { id, url }

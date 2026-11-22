@@ -164,6 +164,165 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.deepEqual(await res.json(), { error: 'Image too large (max 2 MB)' });
   });
 
+  await t.test('card with an uploaded image is deleted -> image GET 404', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card with image', og_image: up.body.url }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const getBefore = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getBefore.status, 200);
+
+    const del = await fetch(`${base}/businesses/${card.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(del.status, 200);
+    assert.deepEqual(await del.json(), { success: true });
+
+    const getAfter = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getAfter.status, 404);
+  });
+
+  await t.test('two cards share the same image; deleting one -> image still 200; deleting the second -> 404', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+    const c1Res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card 1', og_image: up.body.url }),
+    });
+    assert.equal(c1Res.status, 201);
+    const c1 = await c1Res.json();
+
+    const c2Res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card 2', og_image: up.body.url }),
+    });
+    assert.equal(c2Res.status, 201);
+    const c2 = await c2Res.json();
+
+    const del1 = await fetch(`${base}/businesses/${c1.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(del1.status, 200);
+
+    const getMid = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getMid.status, 200);
+
+    const del2 = await fetch(`${base}/businesses/${c2.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(del2.status, 200);
+
+    const getEnd = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getEnd.status, 404);
+  });
+
+  await t.test('PUT replacing og_image with another uploaded image -> old image 404, new image 200', async () => {
+    const up1 = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    const up2 = await upload({ data: dataUrl('image/png', PNG) });
+    assert.equal(up1.status, 201);
+    assert.equal(up2.status, 201);
+
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card replace', og_image: up1.body.url }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const putRes = await fetch(`${base}/businesses/${card.id}`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ og_image: up2.body.url }),
+    });
+    assert.equal(putRes.status, 200);
+
+    const getOld = await fetch(`${base}/images/${up1.body.id}`);
+    assert.equal(getOld.status, 404);
+
+    const getNew = await fetch(`${base}/images/${up2.body.id}`);
+    assert.equal(getNew.status, 200);
+  });
+
+  await t.test('PUT with og_image \'\' -> old image 404', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card clear image', og_image: up.body.url }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const putRes = await fetch(`${base}/businesses/${card.id}`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ og_image: '' }),
+    });
+    assert.equal(putRes.status, 200);
+
+    const getOld = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getOld.status, 404);
+  });
+
+  await t.test('PUT without og_image in the body (e.g. only title) -> image still 200', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card title edit', og_image: up.body.url }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const putRes = await fetch(`${base}/businesses/${card.id}`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ title: 'Updated Title Only' }),
+    });
+    assert.equal(putRes.status, 200);
+
+    const getImg = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getImg.status, 200);
+  });
+
+  await t.test('another user cannot cause deletion: user B creates a card whose og_image is user A\'s image URL, then deletes it -> A\'s image still 200', async () => {
+    const up = await upload({ data: dataUrl('image/jpeg', JPEG) });
+    assert.equal(up.status, 201);
+
+    const resB = await fetch(`${base}/auth/sign_up`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'user.b.orphan@example.com', password: 'Passw0rd!x', password_confirmation: 'Passw0rd!x', first_name: 'B', last_name: 'User' }),
+    });
+    assert.equal(resB.status, 201);
+    const suB = await resB.json();
+    const authB = { Authorization: `Bearer ${suB.token}`, uid: suB.uid, 'Content-Type': 'application/json' };
+
+    const cardBRes = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: authB,
+      body: JSON.stringify({ title: 'User B Card', og_image: up.body.url }),
+    });
+    assert.equal(cardBRes.status, 201);
+    const cardB = await cardBRes.json();
+
+    const delB = await fetch(`${base}/businesses/${cardB.id}`, { method: 'DELETE', headers: authB });
+    assert.equal(delB.status, 200);
+
+    const getImg = await fetch(`${base}/images/${up.body.id}`);
+    assert.equal(getImg.status, 200);
+  });
+
+  await t.test('deleting a card whose og_image is an external URL (https://example.com/a.jpg) still returns 200 {"success":true}', async () => {
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card external image', og_image: 'https://example.com/a.jpg' }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const del = await fetch(`${base}/businesses/${card.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(del.status, 200);
+    assert.deepEqual(await del.json(), { success: true });
+  });
+
   await t.test('POST /images rejects upload when user reaches 100 images limit', async () => {
     const { rows: [{ id: userId }] } = await pool.query('SELECT id FROM users WHERE token = $1', [su.token]);
     const { rows: [{ n: currentCount }] } = await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [userId]);
