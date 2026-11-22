@@ -57,6 +57,17 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.deepEqual(body.folder_ids, [f1]);
   });
 
+  await t.test('a title longer than the 255-character column is shortened, not a 500', async () => {
+    const caption = 'Stephanie Simmons on Instagram: "' + 'Pumpkin pie cookies '.repeat(30) + '"';
+    const created = await call(alice, 'POST', '/businesses', { title: caption, folder_id: f1 });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.title.length, 255);
+    assert.ok(created.body.title.endsWith('…'));
+    const edited = await call(alice, 'PUT', `/businesses/${created.body.id}`, { title: caption });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.title.length, 255);
+  });
+
   let cardId;
   await t.test('create stores a trimmed price capped at 50 characters', async () => {
     const { status, body } = await call(alice, 'POST', '/businesses', { title: 'Roller', price: '  $29.99 ', folder_id: f1 });

@@ -17,7 +17,8 @@ const dns     = require('dns');
 const http    = require('http');
 const https   = require('https');
 const net     = require('net');
-const { extractMetadata } = require('./lib/extractMetadata');
+const { extractMetadata, shorten } = require('./lib/extractMetadata');
+const MAX_TITLE = 255; // businesses.title is VARCHAR(255)
 const { mapOembed } = require('./lib/oembed');
 
 const app  = express();
@@ -365,7 +366,7 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 
     const { rows: [row] } = await query(
       'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, title, description, website, email, tagsJson, sanitizeImageUrl(og_image), sanitizePrice(price)]
+      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, sanitizeImageUrl(og_image), sanitizePrice(price)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -395,7 +396,7 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          og_image    = COALESCE(?, og_image),
          price       = COALESCE(?, price)
        WHERE id = ? AND user_id = ?`,
-      [title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, id, req.user.id]
+      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, id, req.user.id]
     );
     const card = await loadBusiness(id, req.user.id);
     if (!card) return res.status(404).json({ error: 'Business not found' });

@@ -66,6 +66,15 @@ test('a page video does not override its Recipe or Product node (bbcgoodfood lis
   assert.equal(extractMetadata(product, 'https://shop.com/shoe').type, 'product');
 });
 
+test('long titles (Instagram captions) are shortened to 200 characters with an ellipsis', () => {
+  const caption = 'Stephanie Simmons on Instagram: "' + 'Pumpkin pie cookies '.repeat(30) + '"';
+  const meta = extractMetadata(page(`<meta property="og:title" content='${caption}'>`), 'https://www.instagram.com/reel/abc/');
+  assert.equal(meta.title.length, 200);
+  assert.ok(meta.title.startsWith('Stephanie Simmons on Instagram'));
+  assert.ok(meta.title.endsWith('…'));
+  assert.equal(extractMetadata(page('<title>Short</title>'), 'https://a.com').title, 'Short');
+});
+
 test('NewsArticle inside @graph is an article with published date', () => {
   const html = page(ld({ '@context': 'https://schema.org', '@graph': [
     { '@type': 'WebSite', name: 'Site' },
