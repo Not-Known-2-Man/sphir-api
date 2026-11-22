@@ -377,9 +377,14 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 
     const tagsJson = JSON.stringify(parseTags(tags));
 
+    let ogImageUrl = sanitizeImageUrl(og_image);
+    if (isInstagramCdnUrl(ogImageUrl)) {
+      ogImageUrl = (await copyInstagramCover(ogImageUrl, req.user.id, req)) || ogImageUrl;
+    }
+
     const { rows: [row] } = await query(
       'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, sanitizeImageUrl(og_image), sanitizePrice(price)]
+      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -395,13 +400,17 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     }
     const tagsJson = tags !== undefined ? JSON.stringify(parseTags(tags)) : undefined;
     // undefined keeps the stored image; '' (or an invalid URL) removes it.
-    const ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
+    let ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
     const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
 
     const { rows: [cur] } = await query(
       'SELECT og_image FROM businesses WHERE id = ? AND user_id = ?',
       [id, req.user.id]
     );
+    // Copy only for an existing card of this user, so a 404 never leaves a stored image behind.
+    if (cur && og_image !== undefined && isInstagramCdnUrl(ogImage)) {
+      ogImage = (await copyInstagramCover(ogImage, req.user.id, req)) || ogImage;
+    }
 
     await query(
       `UPDATE businesses SET
@@ -639,6 +648,56 @@ async function deleteImageIfOrphan(ogImage, userId) {
     'DELETE FROM images WHERE id = ?::uuid AND user_id = ? AND NOT EXISTS (SELECT 1 FROM businesses WHERE og_image LIKE \'%/api/v1/images/\' || ?::text || \'%\')',
     [id, userId, id]
   );
+}
+
+function isInstagramCdnUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return false;
+    const h = parsed.hostname.toLowerCase();
+    return h === 'cdninstagram.com' || h.endsWith('.cdninstagram.com') || h === 'fbcdn.net' || h.endsWith('.fbcdn.net');
+  } catch {
+    return false;
+  }
+}
+
+async function copyInstagramCover(url, userId, req) {
+  try {
+    if (!isInstagramCdnUrl(url)) return null;
+    assertPublicUrl(url);
+    const axios = require('axios');
+    const response = await axios.get(url, {
+      ...previewAgents,
+      responseType: 'arraybuffer',
+      timeout: 5000,
+      maxRedirects: 3,
+      maxContentLength: MAX_IMAGE_BYTES,
+      beforeRedirect: (options) => {
+        assertPublicUrl(`${options.protocol}//${options.hostname}`);
+      },
+      headers: { 'User-Agent': 'facebookexternalhit/1.1' },
+    });
+    const bytes = Buffer.from(response.data);
+    if (bytes.length > MAX_IMAGE_BYTES) return null;
+    let mime = null;
+    for (const [type, check] of Object.entries(IMAGE_MAGIC)) {
+      if (check(bytes)) {
+        mime = type;
+        break;
+      }
+    }
+    if (!mime) return null;
+    const { rows: [{ n }] } = await query('SELECT count(*)::int AS n FROM images WHERE user_id = ?', [userId]);
+    if (n >= MAX_IMAGES_PER_USER) return null;
+    const id = uuidv4();
+    await query('INSERT INTO images (id, user_id, mime, data) VALUES (?, ?, ?, ?)', [id, userId, mime, bytes]);
+    return `${publicApiBase(req)}/api/v1/images/${id}`;
+  } catch (err) {
+    const reason = err?.message || err;
+    console.warn('[images] instagram cover copy failed: ' + reason);
+    return null;
+  }
 }
 
 // POST /api/v1/images  { data: "data:image/jpeg;base64,..." } -> 201 { id, url }

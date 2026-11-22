@@ -323,6 +323,116 @@ test('images upload and serving', { skip: !testDb && 'SPHIR_TEST_DB not set' }, 
     assert.deepEqual(await del.json(), { success: true });
   });
 
+  await t.test('POST /businesses with Instagram CDN og_image copies image and replaces og_image with local URL', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async () => ({ data: JPEG }));
+    const instagramUrl = 'https://scontent-iad3-1.cdninstagram.com/v/t51/abc.jpg?sig=x';
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Instagram cover card', og_image: instagramUrl }),
+    });
+    assert.equal(res.status, 201);
+    const card = await res.json();
+    assert.match(card.og_image, /\/api\/v1\/images\/[0-9a-f-]{36}$/);
+    const get = await fetch(card.og_image);
+    assert.equal(get.status, 200);
+    assert.equal(get.headers.get('content-type'), 'image/jpeg');
+    assert.deepEqual(Buffer.from(await get.arrayBuffer()), JPEG);
+  });
+
+  await t.test('POST /businesses with Instagram CDN og_image keeps original URL when mock throws', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async () => { throw new Error('Instagram fetch failed'); });
+    const instagramUrl = 'https://scontent-iad3-1.cdninstagram.com/v/t51/abc.jpg?sig=x';
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Instagram cover error', og_image: instagramUrl }),
+    });
+    assert.equal(res.status, 201);
+    const card = await res.json();
+    assert.equal(card.og_image, instagramUrl);
+  });
+
+  await t.test('POST /businesses with Instagram CDN og_image keeps original URL when mock returns non-image bytes', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async () => ({ data: Buffer.from('<html>not an image</html>') }));
+    const instagramUrl = 'https://scontent-iad3-1.cdninstagram.com/v/t51/abc.jpg?sig=x';
+    const before = await count();
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Instagram non-image', og_image: instagramUrl }),
+    });
+    assert.equal(res.status, 201);
+    const card = await res.json();
+    assert.equal(card.og_image, instagramUrl);
+    assert.equal(await count(), before);
+  });
+
+  await t.test('POST /businesses with non-Instagram og_image does not call axios.get and keeps URL unchanged', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async () => ({ data: JPEG }));
+    const normalUrl = 'https://example.com/a.jpg';
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Non-Instagram card', og_image: normalUrl }),
+    });
+    assert.equal(res.status, 201);
+    const card = await res.json();
+    assert.equal(card.og_image, normalUrl);
+    assert.equal(mock.mock.callCount(), 0);
+  });
+
+  await t.test('POST /businesses with look-alike host does not call axios.get and keeps URL unchanged', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async () => ({ data: JPEG }));
+    const lookAlikeUrl = 'https://cdninstagram.com.evil.example/a.jpg';
+    const res = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Look-alike host card', og_image: lookAlikeUrl }),
+    });
+    assert.equal(res.status, 201);
+    const card = await res.json();
+    assert.equal(card.og_image, lookAlikeUrl);
+    assert.equal(mock.mock.callCount(), 0);
+  });
+
+  await t.test('PUT /businesses/:id with Instagram CDN og_image copies image and replaces og_image with local URL', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async () => ({ data: PNG }));
+    const created = await fetch(`${base}/businesses`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ title: 'Card before Instagram edit' }),
+    });
+    assert.equal(created.status, 201);
+    const card = await created.json();
+
+    const instagramUrl = 'https://scontent-iad3-1.cdninstagram.com/v/t51/abc.png?sig=x';
+    const putRes = await fetch(`${base}/businesses/${card.id}`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ og_image: instagramUrl }),
+    });
+    assert.equal(putRes.status, 200);
+    const updated = await putRes.json();
+    assert.match(updated.og_image, /\/api\/v1\/images\/[0-9a-f-]{36}$/);
+    const get = await fetch(updated.og_image);
+    assert.equal(get.status, 200);
+    assert.equal(get.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(await get.arrayBuffer()), PNG);
+  });
+
+  await t.test('PUT /businesses/:id of a missing card with Instagram og_image returns 404 and fetches nothing', async (st) => {
+    const axios = require('axios');
+    const mock = st.mock.method(axios, 'get', async () => ({ data: JPEG }));
+    const before = await count();
+    const res = await fetch(`${base}/businesses/999999`, {
+      method: 'PUT', headers: auth,
+      body: JSON.stringify({ og_image: 'https://scontent-iad3-1.cdninstagram.com/v/t51/abc.jpg?sig=x' }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(mock.mock.callCount(), 0);
+    assert.equal(await count(), before);
+  });
+
   await t.test('POST /images rejects upload when user reaches 100 images limit', async () => {
     const { rows: [{ id: userId }] } = await pool.query('SELECT id FROM users WHERE token = $1', [su.token]);
     const { rows: [{ n: currentCount }] } = await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [userId]);
