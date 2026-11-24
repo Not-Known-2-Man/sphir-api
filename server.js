@@ -20,6 +20,7 @@ const net     = require('net');
 const { extractMetadata, shorten } = require('./lib/extractMetadata');
 const MAX_TITLE = 255; // businesses.title is VARCHAR(255)
 const { mapOembed, mapTweetOembed } = require('./lib/oembed');
+const { linkKey } = require('./lib/linkKey');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -401,8 +402,8 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     }
 
     const { rows: [row] } = await query(
-      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price)]
+      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *',
+      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -420,6 +421,7 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     // undefined keeps the stored image; '' (or an invalid URL) removes it.
     let ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
     const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
+    const linkKeyVal = website !== undefined ? linkKey(website) : undefined;
 
     const { rows: [cur] } = await query(
       'SELECT og_image FROM businesses WHERE id = ? AND user_id = ?',
@@ -439,9 +441,10 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          tags        = COALESCE(?, tags),
          folder_id   = COALESCE(?, folder_id),
          og_image    = COALESCE(?, og_image),
-         price       = COALESCE(?, price)
+         price       = COALESCE(?, price),
+         link_key    = COALESCE(?, link_key)
        WHERE id = ? AND user_id = ?`,
-      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, id, req.user.id]
+      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, linkKeyVal, id, req.user.id]
     );
     const card = await loadBusiness(id, req.user.id);
     if (!card) return res.status(404).json({ error: 'Business not found' });
@@ -566,11 +569,41 @@ const previewAgents = {
 };
 
 app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
+  let alreadyOnSphir = null;
   try {
     const axios   = require('axios');
     const { url } = req.query;
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
     assertPublicUrl(url);
+
+    const key = linkKey(url);
+    if (key) {
+      const { rows } = await query(
+        `SELECT count(DISTINCT user_id)::int AS count
+         FROM businesses
+         WHERE link_key = ?`,
+        [key]
+      );
+      const count = rows[0]?.count || 0;
+      if (count > 0) {
+        const { rows: [recent] } = await query(
+          `SELECT title, og_image, price
+           FROM businesses
+           WHERE link_key = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+          [key]
+        );
+        // Only public page info; description and tags can hold that user's own notes (S3).
+        alreadyOnSphir = {
+          count,
+          title: recent.title,
+          image: recent.og_image,
+          price: recent.price,
+        };
+      }
+    }
+
     const limits = {
       ...previewAgents,
       timeout: 5000,
@@ -631,8 +664,22 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
       }
       if (!meta?.title) throw new Error('Empty oEmbed');
     }
-    res.json(meta);
+    res.json({ ...meta, already_on_sphir: alreadyOnSphir });
   } catch (e) {
+    if (alreadyOnSphir) {
+      return res.json({
+        url: req.query.url,
+        title: alreadyOnSphir.title,
+        description: '',
+        image: alreadyOnSphir.image,
+        type: 'link',
+        tags: [],
+        price: alreadyOnSphir.price,
+        site: '',
+        published: '',
+        already_on_sphir: alreadyOnSphir,
+      });
+    }
     console.warn(`[preview] GET ${req.query.url} failed: ${e.response?.status || e.code || e.message}`);
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
@@ -793,6 +840,8 @@ async function migrate() {
     await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK]);
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT ''");
+    await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS link_key TEXT NOT NULL DEFAULT ''");
+    await client.query("CREATE INDEX IF NOT EXISTS businesses_link_key_idx ON businesses (link_key)");
     // Extra collections of a card; the primary one stays in businesses.folder_id.
     await client.query(`CREATE TABLE IF NOT EXISTS business_folders (
       business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
@@ -808,6 +857,15 @@ async function migrate() {
       data       BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    try {
+      const { rows: backfillRows } = await client.query("SELECT id, website FROM businesses WHERE link_key = '' AND website <> ''");
+      for (const row of backfillRows) {
+        const key = linkKey(row.website);
+        await client.query("UPDATE businesses SET link_key = $1 WHERE id = $2", [key, row.id]);
+      }
+    } catch (backfillErr) {
+      console.warn(`[startup] link_key backfill warning: ${backfillErr?.message || backfillErr}`);
+    }
   } finally {
     await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK]).catch(() => {});
     client.release();

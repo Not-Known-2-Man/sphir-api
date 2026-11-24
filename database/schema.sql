@@ -34,12 +34,15 @@ CREATE TABLE IF NOT EXISTS businesses (
   tags        JSONB        NOT NULL,
   og_image    TEXT         NOT NULL DEFAULT '',
   price       TEXT         NOT NULL DEFAULT '',
+  link_key    TEXT         NOT NULL DEFAULT '',
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 
 -- Additive upgrades for databases created before og_image and price existed.
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT '';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT '';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS link_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS businesses_link_key_idx ON businesses (link_key);
 
 -- Extra collections of a card; the primary one stays in businesses.folder_id.
 CREATE TABLE IF NOT EXISTS business_folders (
