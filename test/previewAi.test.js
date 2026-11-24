@@ -204,6 +204,26 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
     assert.equal(body.already_on_sphir, null);
   });
 
+  // 3b. empty AI title/description never blank the page meta (S5/S7)
+  await t.test('empty AI title and description keep the page values', async (st) => {
+    process.env.ANTHROPIC_API_KEY = 'test-api-key';
+    const callerAuth = await signUp(`caller_3b_${Date.now()}@example.com`);
+    st.mock.method(aiCard, 'requestAnthropic', async () => ({
+      content: [{ type: 'tool_use', name: 'card', input: { title: '  ', description: '', price: '', type: 'article', collection_id: null } }],
+    }));
+    st.mock.method(axios, 'get', async (url) => ({
+      data: '<html><head><title>Original Page Title</title><meta property="og:description" content="Original Description"></head></html>',
+      request: { res: { responseUrl: url } },
+    }));
+    const res = await fetch(`${base}/preview?url=${encodeURIComponent('https://example.com/ai-empty-test')}`, { headers: callerAuth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.title, 'Original Page Title');
+    assert.equal(body.description, 'Original Description');
+    assert.equal(body.type, 'article');
+    assert.equal(body.ai, true);
+  });
+
   // 4. no ANTHROPIC_API_KEY -> requestAnthropic never called and ai: false
   await t.test('no ANTHROPIC_API_KEY -> requestAnthropic never called and ai: false', async (st) => {
     delete process.env.ANTHROPIC_API_KEY;

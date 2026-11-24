@@ -634,8 +634,9 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
       );
       if (aiResult) {
         const updatedMeta = { ...meta };
-        if (aiResult.title !== undefined) updatedMeta.title = aiResult.title;
-        if (aiResult.description !== undefined) updatedMeta.description = aiResult.description;
+        // An empty AI value never blanks what the page already gave.
+        if (aiResult.title?.trim()) updatedMeta.title = aiResult.title.trim();
+        if (aiResult.description?.trim()) updatedMeta.description = aiResult.description.trim();
         if (aiResult.type !== undefined) updatedMeta.type = aiResult.type;
         if (aiResult.price) updatedMeta.price = aiResult.price;
         return {
@@ -944,7 +945,7 @@ async function migrate() {
   }
 }
 
-module.exports = { app, migrate, pool, finishPreview };
+module.exports = { app, migrate, pool };
 
 if (require.main === module) migrate().then(() => app.listen(PORT, () => {
   console.log(`✓ Sphir API running on http://localhost:${PORT}`);

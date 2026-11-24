@@ -19,6 +19,25 @@ test('aiCard unit tests', async (t) => {
     assert.equal(called, false);
   });
 
+  // 1b. an upstream error body is never logged (it could echo the key)
+  await t.test('API error logs only the status, never the response body', async (st) => {
+    st.mock.method(globalThis, 'fetch', async () => ({
+      ok: false,
+      status: 401,
+      text: async () => 'invalid x-api-key secret-key-123',
+    }));
+    const warnings = [];
+    st.mock.method(console, 'warn', (...args) => { warnings.push(args.join(' ')); });
+
+    const res = await aiCard.enrichCard(
+      { url: 'https://example.com', meta: {}, text: 'sample', collections: [] },
+      { apiKey: 'secret-key-123' }
+    );
+    assert.equal(res, null);
+    assert.ok(warnings.some(w => w.includes('401')), 'status is logged');
+    assert.ok(warnings.every(w => !w.includes('secret-key-123')), 'key never logged');
+  });
+
   // 2. valid tool_use -> mapped fields
   await t.test('valid tool_use -> mapped fields', async (st) => {
     st.mock.method(aiCard, 'requestAnthropic', async () => ({
