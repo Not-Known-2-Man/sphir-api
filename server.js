@@ -279,6 +279,24 @@ app.delete('/api/v1/auth/sign_out', authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// DELETE /api/v1/auth
+app.delete('/api/v1/auth', authenticate, requireUser, async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (typeof password !== 'string' || !password) {
+      return res.status(422).json({ error: 'Incorrect password' });
+    }
+
+    const valid = req.user.password_hash && await bcrypt.compare(password, req.user.password_hash);
+    if (!valid) {
+      return res.status(422).json({ error: 'Incorrect password' });
+    }
+
+    await query('DELETE FROM users WHERE id = ?', [req.user.id]);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  FOLDERS (Collections)
 // ═════════════════════════════════════════════════════════════════════════════
