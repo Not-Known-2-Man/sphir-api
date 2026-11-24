@@ -409,11 +409,16 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
     process.env.ANTHROPIC_API_KEY = 'test-api-key';
     assert.equal((await preview(callerAuth, 1)).ai, true);
     assert.equal((await preview(callerAuth, 2)).ai, true);
+    const warnings = [];
+    const warnMock = st.mock.method(console, 'warn', (msg) => { warnings.push(String(msg)); });
     const over = await preview(callerAuth, 3);
+    await preview(callerAuth, 5);
+    assert.equal(warnings.filter((w) => w.includes('reached the daily AI limit (2)')).length, 1);
     assert.equal(over.ai, false);
     assert.equal(over.title, 'Page Title');
     assert.equal(over.suggested_collection_id, null);
     assert.equal(calls, 2);
+    warnMock.mock.restore();
     assert.equal((await preview(otherAuth, 4)).ai, true);
     assert.equal(calls, 3);
   });

@@ -620,7 +620,11 @@ function takeAiCall(userId) {
   const parsed = Number.parseInt(process.env.AI_DAILY_LIMIT, 10);
   const limit = Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_AI_DAILY_LIMIT;
   const used = aiUsage.counts.get(userId) || 0;
-  if (used >= limit) return false;
+  if (used >= limit) {
+    if (used === limit) console.warn(`[ai] user ${userId} reached the daily AI limit (${limit})`);
+    aiUsage.counts.set(userId, limit + 1);
+    return false;
+  }
   aiUsage.counts.set(userId, used + 1);
   return true;
 }

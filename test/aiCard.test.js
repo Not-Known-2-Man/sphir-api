@@ -311,6 +311,7 @@ test('aiCard unit tests', async (t) => {
     assert.equal(aiCard.pageText('<p>a</p><script>x</script'), 'a');
     assert.equal(aiCard.pageText('<scripts>kept</scripts>'), 'kept');
     assert.equal(aiCard.pageText('<style-x>custom</style-x><script_x>el</script_x>'), 'custom el');
+    assert.equal(aiCard.pageText('<p>İstanbul İİİ</p><script>var leak = 1;</script><p>end</p>'), 'İstanbul İİİ end');
     assert.equal(aiCard.pageText('<SCRIPT type="x">hidden</SCRIPT><style/>z</style>ok'), 'ok');
   });
 
