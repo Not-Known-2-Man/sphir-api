@@ -21,6 +21,7 @@ const { extractMetadata, shorten } = require('./lib/extractMetadata');
 const MAX_TITLE = 255; // businesses.title is VARCHAR(255)
 const { mapOembed, mapTweetOembed } = require('./lib/oembed');
 const { linkKey } = require('./lib/linkKey');
+const aiCard = require('./lib/aiCard');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -569,6 +570,94 @@ const previewAgents = {
   httpsAgent: new https.Agent({ lookup: safeLookup }),
 };
 
+async function lookupSavedLink(url) {
+  try {
+    const key = linkKey(url);
+    if (!key) return null;
+    const { rows } = await query(
+      `SELECT count(DISTINCT user_id)::int AS count
+       FROM businesses
+       WHERE link_key = ?`,
+      [key]
+    );
+    const count = rows[0]?.count || 0;
+    if (count > 0) {
+      const { rows: [recent] } = await query(
+        `SELECT title, og_image, price
+         FROM businesses
+         WHERE link_key = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+        [key]
+      );
+      if (recent) {
+        return {
+          count,
+          title: recent.title,
+          image: recent.og_image && recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
+          price: recent.price,
+        };
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[preview] saved-link lookup failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
+async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphir) {
+  let alreadyOnSphir = precomputedAlreadyOnSphir;
+  if (alreadyOnSphir === undefined) {
+    alreadyOnSphir = await lookupSavedLink(url);
+  }
+
+  if (alreadyOnSphir) {
+    return {
+      ...meta,
+      already_on_sphir: alreadyOnSphir,
+      ai: false,
+      suggested_collection_id: null,
+    };
+  }
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const { rows: collections } = await query(
+        'SELECT id, name FROM folders WHERE user_id = ?',
+        [req.user.id]
+      );
+      const text = aiCard.pageText(html);
+      const aiResult = await aiCard.enrichCard(
+        { url, meta, text, collections },
+        { apiKey: process.env.ANTHROPIC_API_KEY }
+      );
+      if (aiResult) {
+        const updatedMeta = { ...meta };
+        if (aiResult.title !== undefined) updatedMeta.title = aiResult.title;
+        if (aiResult.description !== undefined) updatedMeta.description = aiResult.description;
+        if (aiResult.type !== undefined) updatedMeta.type = aiResult.type;
+        if (aiResult.price) updatedMeta.price = aiResult.price;
+        return {
+          ...updatedMeta,
+          already_on_sphir: null,
+          ai: true,
+          suggested_collection_id: aiResult.collection_id ?? null,
+        };
+      }
+    } catch (aiErr) {
+      console.warn(`[ai] enrichCard failed: ${aiErr?.message || aiErr}`);
+    }
+  }
+
+  return {
+    ...meta,
+    already_on_sphir: null,
+    ai: false,
+    suggested_collection_id: null,
+  };
+}
+
 app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
   let alreadyOnSphir = null;
   try {
@@ -577,34 +666,7 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
     assertPublicUrl(url);
 
-    const key = linkKey(url);
-    if (key) {
-      const { rows } = await query(
-        `SELECT count(DISTINCT user_id)::int AS count
-         FROM businesses
-         WHERE link_key = ?`,
-        [key]
-      );
-      const count = rows[0]?.count || 0;
-      if (count > 0) {
-        const { rows: [recent] } = await query(
-          `SELECT title, og_image, price
-           FROM businesses
-           WHERE link_key = ?
-           ORDER BY created_at DESC, id DESC
-           LIMIT 1`,
-          [key]
-        );
-        // Only public page info; description and tags can hold that user's own notes (S3).
-        alreadyOnSphir = {
-          count,
-          title: recent.title,
-          // A photo uploaded to Sphir belongs to that user; only page images are shared.
-          image: recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
-          price: recent.price,
-        };
-      }
-    }
+    alreadyOnSphir = await lookupSavedLink(url);
 
     const limits = {
       ...previewAgents,
@@ -621,6 +683,7 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     const isTwitterHost = /^(?:(?:www|mobile)\.)?(?:x|twitter)\.com$/i.test(host);
     const isTwitterPost = isTwitterHost && /^\/[^/]+\/status\/\d+\/?$/i.test(new URL(url).pathname);
     let meta = null;
+    let rawHtml = '';
     if (isTwitterPost) {
       try {
         const oembed = await axios.get('https://publish.twitter.com/oembed', {
@@ -640,8 +703,9 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
           ...limits,
           headers: { 'User-Agent': isInstagram ? 'facebookexternalhit/1.1' : 'Mozilla/5.0' },
         });
+        rawHtml = typeof response.data === 'string' ? response.data : '';
         const finalUrl = response.request?.res?.responseUrl || url;
-        meta = extractMetadata(typeof response.data === 'string' ? response.data : '', finalUrl);
+        meta = extractMetadata(rawHtml, finalUrl);
       } catch (e) {
         if (!isYouTube) throw e;
         console.warn(`[preview] page fetch failed: ${e.response?.status || e.code || e.message}`);
@@ -666,7 +730,8 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
       }
       if (!meta?.title) throw new Error('Empty oEmbed');
     }
-    res.json({ ...meta, already_on_sphir: alreadyOnSphir });
+    const result = await finishPreview(req, url, meta, rawHtml, alreadyOnSphir);
+    res.json(result);
   } catch (e) {
     if (alreadyOnSphir) {
       return res.json({
@@ -680,6 +745,8 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
         site: '',
         published: '',
         already_on_sphir: alreadyOnSphir,
+        ai: false,
+        suggested_collection_id: null,
       });
     }
     console.warn(`[preview] GET ${req.query.url} failed: ${e.response?.status || e.code || e.message}`);
@@ -689,14 +756,16 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
 
 // The iOS share extension already has the page the user is looking at (including sites that
 // block server fetches), so it sends the HTML and the server only extracts; nothing is fetched.
-app.post('/api/v1/preview', authenticate, requireUser, (req, res) => {
+app.post('/api/v1/preview', authenticate, requireUser, async (req, res) => {
   const { url, html } = req.body || {};
   if (!url || typeof url !== 'string' || typeof html !== 'string') {
     return res.status(400).json({ error: 'URL and HTML required' });
   }
   try {
     assertPublicUrl(url);
-    res.json(extractMetadata(html, url));
+    const meta = extractMetadata(html, url);
+    const result = await finishPreview(req, url, meta, html);
+    res.json(result);
   } catch (e) {
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
@@ -863,6 +932,7 @@ async function migrate() {
       const { rows: backfillRows } = await client.query("SELECT id, website FROM businesses WHERE link_key = '' AND website ~* '^https?://'");
       for (const row of backfillRows) {
         const key = linkKey(row.website);
+        if (!key) continue;
         await client.query("UPDATE businesses SET link_key = $1 WHERE id = $2", [key, row.id]);
       }
     } catch (backfillErr) {
@@ -874,7 +944,7 @@ async function migrate() {
   }
 }
 
-module.exports = { app, migrate, pool };
+module.exports = { app, migrate, pool, finishPreview };
 
 if (require.main === module) migrate().then(() => app.listen(PORT, () => {
   console.log(`✓ Sphir API running on http://localhost:${PORT}`);
