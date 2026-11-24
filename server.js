@@ -421,7 +421,8 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     // undefined keeps the stored image; '' (or an invalid URL) removes it.
     let ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
     const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
-    const linkKeyVal = website !== undefined ? linkKey(website) : undefined;
+    // Only a website string changes the key; null keeps the stored website, so it keeps the key.
+    const linkKeyVal = typeof website === 'string' ? linkKey(website) : undefined;
 
     const { rows: [cur] } = await query(
       'SELECT og_image FROM businesses WHERE id = ? AND user_id = ?',
@@ -598,7 +599,8 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
         alreadyOnSphir = {
           count,
           title: recent.title,
-          image: recent.og_image,
+          // A photo uploaded to Sphir belongs to that user; only page images are shared.
+          image: recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
           price: recent.price,
         };
       }
@@ -858,7 +860,7 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
     try {
-      const { rows: backfillRows } = await client.query("SELECT id, website FROM businesses WHERE link_key = '' AND website <> ''");
+      const { rows: backfillRows } = await client.query("SELECT id, website FROM businesses WHERE link_key = '' AND website ~* '^https?://'");
       for (const row of backfillRows) {
         const key = linkKey(row.website);
         await client.query("UPDATE businesses SET link_key = $1 WHERE id = $2", [key, row.id]);

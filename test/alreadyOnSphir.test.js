@@ -239,6 +239,47 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
     assert.equal(prevNew.already_on_sphir.count, 1);
   });
 
+  // (g) PUT without a website string keeps the link findable
+  await t.test('(g) PUT without website or with website null keeps link_key', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async (url) => ({
+      data: '<html><head><meta property="og:title" content="Page"></head></html>',
+      request: { res: { responseUrl: url } },
+    }));
+    const postRes = await fetch(`${base}/businesses`, {
+      method: 'POST',
+      headers: authUser2,
+      body: JSON.stringify({ title: 'Keep Key', website: 'https://keep.example.com/p/1' }),
+    });
+    assert.equal(postRes.status, 201);
+    const card = await postRes.json();
+    const count = async () => (await (await fetch(`${base}/preview?url=${encodeURIComponent('https://keep.example.com/p/1')}`, { headers: authCaller })).json()).already_on_sphir?.count;
+
+    for (const body of [{ title: 'Renamed' }, { website: null }]) {
+      const putRes = await fetch(`${base}/businesses/${card.id}`, { method: 'PUT', headers: authUser2, body: JSON.stringify(body) });
+      assert.equal(putRes.status, 200);
+      assert.equal(await count(), 1, `after PUT ${JSON.stringify(body)}`);
+    }
+  });
+
+  // (h) another user's uploaded photo is never handed out (S3)
+  await t.test('(h) uploaded Sphir image of another user is not shared', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async (url) => ({
+      data: '<html><head><meta property="og:title" content="Page"></head></html>',
+      request: { res: { responseUrl: url } },
+    }));
+    await pool.query(
+      `INSERT INTO businesses (user_id, title, description, website, tags, og_image, price, link_key)
+       VALUES ($1, 'Private Photo', '', 'https://photo.example.com/p/2', '[]'::jsonb,
+               'https://sphir-api.onrender.com/api/v1/images/11111111-2222-4333-8444-555555555555', '', 'photo.example.com/p/2')`,
+      [1]
+    );
+    const prev = await (await fetch(`${base}/preview?url=${encodeURIComponent('https://photo.example.com/p/2')}`, { headers: authCaller })).json();
+    assert.equal(prev.already_on_sphir.count, 1);
+    assert.equal(prev.already_on_sphir.image, '');
+  });
+
   // Startup backfill test
   await t.test('startup backfill populates link_key for rows with website and empty link_key', async (st) => {
     const axios = require('axios');
