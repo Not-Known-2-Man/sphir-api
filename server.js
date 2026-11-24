@@ -606,6 +606,25 @@ async function lookupSavedLink(url) {
   }
 }
 
+// AI calls per user per UTC day (S11). In memory: Render runs one instance, and a restart
+// only resets the count, so it caps cost without a table.
+const DEFAULT_AI_DAILY_LIMIT = 50;
+const aiUsage = { day: '', counts: new Map() };
+
+function takeAiCall(userId) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (aiUsage.day !== day) {
+    aiUsage.day = day;
+    aiUsage.counts.clear();
+  }
+  const parsed = Number.parseInt(process.env.AI_DAILY_LIMIT, 10);
+  const limit = Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_AI_DAILY_LIMIT;
+  const used = aiUsage.counts.get(userId) || 0;
+  if (used >= limit) return false;
+  aiUsage.counts.set(userId, used + 1);
+  return true;
+}
+
 async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphir) {
   let alreadyOnSphir = precomputedAlreadyOnSphir;
   if (alreadyOnSphir === undefined) {
@@ -621,7 +640,7 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
     };
   }
 
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (process.env.ANTHROPIC_API_KEY && takeAiCall(req.user.id)) {
     try {
       const { rows: collections } = await query(
         'SELECT id, name FROM folders WHERE user_id = ?',

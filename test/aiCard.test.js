@@ -292,4 +292,48 @@ test('aiCard unit tests', async (t) => {
     const excerpt = aiCard.pageText(hugeHtml);
     assert.ok(excerpt.length <= 6000);
   });
+
+  // S10: only the first ~200KB of HTML is read
+  await t.test('pageText reads only the first 200KB of HTML (S10)', () => {
+    const html = '<div>' + ' '.repeat(210 * 1024) + '</div><p>tail marker</p>';
+    assert.equal(aiCard.pageText(html), '');
+    assert.equal(aiCard.pageText('<p>head marker</p>' + ' '.repeat(210 * 1024)), 'head marker');
+  });
+
+  // S10: crafted HTML cannot stall the server
+  await t.test('pageText stays fast on crafted HTML (unclosed scripts and tags) (S10)', () => {
+    for (const crafted of ['<script'.repeat(40000), '<a'.repeat(100000), '<style x'.repeat(30000)]) {
+      const start = process.hrtime.bigint();
+      aiCard.pageText(crafted);
+      const ms = Number(process.hrtime.bigint() - start) / 1e6;
+      assert.ok(ms < 200, `took ${ms}ms`);
+    }
+    assert.equal(aiCard.pageText('<p>a</p><script>x</script'), 'a');
+    assert.equal(aiCard.pageText('<scripts>kept</scripts>'), 'kept');
+    assert.equal(aiCard.pageText('<style-x>custom</style-x><script_x>el</script_x>'), 'custom el');
+    assert.equal(aiCard.pageText('<SCRIPT type="x">hidden</SCRIPT><style/>z</style>ok'), 'ok');
+  });
+
+  // S9: default AI timeout is about 4 seconds
+  await t.test('default timeout aborts the AI call after 4 seconds, not before (S9)', async (st) => {
+    st.mock.timers.enable({ apis: ['setTimeout'] });
+    let aborted = false;
+    st.mock.method(aiCard, 'requestAnthropic', async (_body, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }));
+    const pending = aiCard.enrichCard(
+      { url: 'https://example.com', meta: {}, text: '', collections: [] },
+      { apiKey: 'sk-ant-test' }
+    );
+    st.mock.timers.tick(3999);
+    assert.equal(aborted, false);
+    st.mock.timers.tick(1);
+    assert.equal(aborted, true);
+    assert.equal(await pending, null);
+  });
 });
