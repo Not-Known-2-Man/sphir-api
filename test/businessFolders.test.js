@@ -153,10 +153,11 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.deepEqual(after.folder_ids, [fb]);
   });
 
-  await t.test('an empty list removes the card from every collection', async () => {
+  await t.test('an empty list moves the card to Unfiled Cards only (S4)', async () => {
+    const unfiled = (await call(alice, 'GET', '/folders')).body.find(f => f.is_default).id;
     const { body } = await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: [] });
-    assert.equal(body.folder_id, null);
-    assert.deepEqual(body.folder_ids, []);
+    assert.equal(body.folder_id, unfiled);
+    assert.deepEqual(body.folder_ids, [unfiled]);
   });
 
   await t.test('PUT businesses with folder_id replaces only the primary collection', async () => {

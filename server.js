@@ -515,7 +515,7 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
 });
 
 // PUT /api/v1/businesses/:id/folders  { folder_ids: [primary, ...extras] }
-// Replaces every collection of the card in one transaction; [] removes it from all of them.
+// Replaces every collection of the card in one transaction; [] moves it to the user's Unfiled Cards (S4).
 app.put('/api/v1/businesses/:id/folders', authenticate, requireUser, async (req, res, next) => {
   const { id } = req.params;
   const raw = req.body?.folder_ids;
@@ -526,6 +526,12 @@ app.put('/api/v1/businesses/:id/folders', authenticate, requireUser, async (req,
   let client;
   try {
     client = await pool.connect();
+    if (!folderIds.length) {
+      const { rows: [unfiled] } = await client.query(
+        'SELECT id FROM folders WHERE user_id = $1 AND is_default', [req.user.id]
+      );
+      if (unfiled) folderIds.push(unfiled.id);
+    }
     const { rows: owned } = await client.query(
       'SELECT id FROM folders WHERE user_id = $1 AND id = ANY($2::int[])', [req.user.id, folderIds]
     );
