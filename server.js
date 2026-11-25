@@ -862,6 +862,51 @@ app.post('/api/v1/preview', authenticate, requireUser, async (req, res) => {
   }
 });
 
+const AI_FALLBACK_CARD = {
+  ai: false,
+  title: '',
+  description: '',
+  price: '',
+  type: null,
+  suggested_collection_id: null,
+};
+
+app.post('/api/v1/ai/card-from-text', authenticate, requireUser, async (req, res) => {
+  const { text } = req.body || {};
+  if (typeof text !== 'string' || !text.trim()) {
+    return res.status(422).json({ error: 'text is required' });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY || !takeAiCall(req.user.id)) {
+    return res.json(AI_FALLBACK_CARD);
+  }
+
+  try {
+    const { rows: collections } = await query(
+      'SELECT id, name FROM folders WHERE user_id = ?',
+      [req.user.id]
+    );
+    const aiResult = await aiCard.cardFromText(
+      { text: text.trim().slice(0, 6000), collections },
+      { apiKey: process.env.ANTHROPIC_API_KEY }
+    );
+    if (aiResult) {
+      return res.json({
+        ai: true,
+        title: aiResult.title ?? '',
+        description: aiResult.description ?? '',
+        price: aiResult.price ?? '',
+        type: aiResult.type ?? null,
+        suggested_collection_id: aiResult.collection_id ?? null,
+      });
+    }
+  } catch (aiErr) {
+    console.warn(`[ai] cardFromText failed: ${aiErr?.message || aiErr}`);
+  }
+
+  return res.json(AI_FALLBACK_CARD);
+});
+
 // ── Images ────────────────────────────────────────────────────────────────────
 
 const IMAGE_MAGIC = {
