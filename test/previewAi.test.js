@@ -378,7 +378,7 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
       price: '$9',
       site: '',
       published: '',
-      already_on_sphir: { count: 1, title: 'Stored Title', image: 'https://example.com/i.jpg', price: '$9' },
+      already_on_sphir: { count: 1, title: 'Stored Title', description: '', type: '', image: 'https://example.com/i.jpg', price: '$9' },
       ai: false,
       suggested_collection_id: null,
     });

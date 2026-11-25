@@ -98,6 +98,12 @@ PUT    /api/v1/folders/:id      Body: { name?, description?, privacy? }
 DELETE /api/v1/folders/:id
 ```
 
+Every user has one default collection, "Unfiled Cards" (`is_default: true`), created at sign-up and
+by the startup migration for existing users. Cards created without `folder_id` are saved into it, and
+deleting a collection moves its cards that have no other collection into it. The default collection
+cannot be deleted or renamed: `DELETE` and a `PUT` that changes its name answer `409`
+`{"error":"Unfiled Cards can't be deleted or renamed"}`; description and privacy can still change.
+
 ### Businesses (Cards)
 ```
 GET    /api/v1/users/get_businesses?page=1&per_page=50

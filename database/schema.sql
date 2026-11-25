@@ -20,8 +20,14 @@ CREATE TABLE IF NOT EXISTS folders (
   name        VARCHAR(255) NOT NULL,
   description TEXT         NOT NULL,
   privacy     VARCHAR(50)  NOT NULL DEFAULT 'private',
+  is_default  BOOLEAN      NOT NULL DEFAULT false,
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+
+-- "Unfiled Cards": every user has exactly one default collection (created at sign-up and by the
+-- startup migration). It cannot be deleted or renamed; cards without a collection live in it.
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS folders_one_default_per_user ON folders (user_id) WHERE is_default;
 
 CREATE TABLE IF NOT EXISTS businesses (
   id          SERIAL       PRIMARY KEY,

@@ -142,14 +142,14 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.deepEqual(card.folder_ids, [f2, f1]);
   });
 
-  await t.test('deleting the primary folder leaves folder_id null and keeps the extras', async () => {
+  await t.test('deleting the primary folder promotes the first extra to primary', async () => {
     const fa = (await call(alice, 'POST', '/folders', { name: 'A' })).body.id;
     const fb = (await call(alice, 'POST', '/folders', { name: 'B' })).body.id;
     const card = (await call(alice, 'POST', '/businesses', { title: 'Two homes' })).body.id;
     await call(alice, 'PUT', `/businesses/${card}/folders`, { folder_ids: [fa, fb] });
     await call(alice, 'DELETE', `/folders/${fa}`);
     const after = (await call(alice, 'GET', '/users/get_businesses')).body.find(b => b.id === card);
-    assert.equal(after.folder_id, null);
+    assert.equal(after.folder_id, fb);
     assert.deepEqual(after.folder_ids, [fb]);
   });
 

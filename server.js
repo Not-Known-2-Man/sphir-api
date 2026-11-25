@@ -119,6 +119,9 @@ function isValidId(value) {
   return /^[1-9]\d*$/.test(s) && Number(s) <= MAX_INT4;
 }
 
+const DEFAULT_FOLDER_NAME = 'Unfiled Cards';
+const DEFAULT_FOLDER_ERROR = "Unfiled Cards can't be deleted or renamed";
+
 // Absent or empty folder_id means "no folder"; anything else must be a folder the user owns.
 async function folderAllowed(folderId, userId) {
   if (folderId === undefined || folderId === null || folderId === '') return true;
@@ -245,9 +248,14 @@ async function handleSignUp(req, res, next) {
     const client = uuidv4();
     const uid    = email;
 
+    // One statement, so a user never exists without the default collection.
     await query(
-      'INSERT INTO users (email, password_hash, first_name, last_name, token, uid, client, is_guest) VALUES (?,?,?,?,?,?,?,false)',
-      [email, hash, first_name || '', last_name || '', token, uid, client]
+      `WITH u AS (
+         INSERT INTO users (email, password_hash, first_name, last_name, token, uid, client, is_guest)
+         VALUES (?,?,?,?,?,?,?,false) RETURNING id)
+       INSERT INTO folders (user_id, name, description, privacy, is_default)
+       SELECT id, ?, '', 'private', true FROM u`,
+      [email, hash, first_name || '', last_name || '', token, uid, client, DEFAULT_FOLDER_NAME]
     );
 
     res.status(201).json({
@@ -334,17 +342,21 @@ app.put('/api/v1/folders/:id', authenticate, requireUser, async (req, res, next)
   try {
     const { id } = req.params;
     const { name, description, privacy } = req.body;
-    await query(
+    const { rows: [current] } = await query(
+      'SELECT * FROM folders WHERE id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
+    if (!current) return res.status(404).json({ error: 'Folder not found' });
+    if (current.is_default && name !== undefined && name !== null && name !== current.name) {
+      return res.status(409).json({ error: DEFAULT_FOLDER_ERROR });
+    }
+    const { rows: [row] } = await query(
       `UPDATE folders SET
          name        = COALESCE(?, name),
          description = COALESCE(?, description),
          privacy     = COALESCE(?, privacy)
-       WHERE id = ? AND user_id = ?`,
+       WHERE id = ? AND user_id = ? RETURNING *`,
       [name, description, privacy, id, req.user.id]
-    );
-    const { rows: [row] } = await query(
-      'SELECT * FROM folders WHERE id = ? AND user_id = ?',
-      [id, req.user.id]
     );
     if (!row) return res.status(404).json({ error: 'Folder not found' });
     res.json(row);
@@ -352,16 +364,54 @@ app.put('/api/v1/folders/:id', authenticate, requireUser, async (req, res, next)
 });
 
 // DELETE /api/v1/folders/:id
+// Cards whose primary collection this was are never orphaned: a card with another collection
+// gets the first one as primary, any other card moves to the user's default collection.
 app.delete('/api/v1/folders/:id', authenticate, requireUser, async (req, res, next) => {
+  const { id } = req.params;
+  let client;
   try {
-    const { id } = req.params;
-    const result = await query(
-      'DELETE FROM folders WHERE id = ? AND user_id = ?',
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const { rows: [folder] } = await client.query(
+      'SELECT id, is_default FROM folders WHERE id = $1 AND user_id = $2 FOR UPDATE', [id, req.user.id]
+    );
+    if (!folder) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Folder not found' });
+    }
+    if (folder.is_default) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: DEFAULT_FOLDER_ERROR });
+    }
+    // A promoted extra is the primary now, so it also leaves the extras table.
+    await client.query(
+      `WITH promoted AS (
+         UPDATE businesses b SET folder_id = x.fid
+         FROM (SELECT b2.id AS bid,
+                      (SELECT bf.folder_id FROM business_folders bf
+                        WHERE bf.business_id = b2.id AND bf.folder_id <> $1
+                        ORDER BY bf.position, bf.folder_id LIMIT 1) AS fid
+               FROM businesses b2 WHERE b2.folder_id = $1 AND b2.user_id = $2) x
+         WHERE b.id = x.bid AND x.fid IS NOT NULL
+         RETURNING b.id, b.folder_id)
+       DELETE FROM business_folders bf USING promoted p
+       WHERE bf.business_id = p.id AND bf.folder_id = p.folder_id`,
       [id, req.user.id]
     );
-    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    await client.query(
+      `UPDATE businesses SET folder_id = (SELECT id FROM folders WHERE user_id = $2 AND is_default)
+       WHERE folder_id = $1 AND user_id = $2`,
+      [id, req.user.id]
+    );
+    await client.query('DELETE FROM folders WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+    await client.query('COMMIT');
     res.json({ success: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    await client?.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client?.release();
+  }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -403,8 +453,9 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     }
 
     const { rows: [row] } = await query(
-      'INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *',
-      [req.user.id, folder_id || null, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website)]
+      `INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key)
+       VALUES (?, COALESCE(?::int, (SELECT id FROM folders WHERE user_id = ? AND is_default)), ?,?,?,?,?,?,?,?) RETURNING *`,
+      [req.user.id, folder_id || null, req.user.id, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -583,7 +634,7 @@ async function lookupSavedLink(url) {
     const count = rows[0]?.count || 0;
     if (count > 0) {
       const { rows: [recent] } = await query(
-        `SELECT title, og_image, price
+        `SELECT title, description, tags, og_image, price
          FROM businesses
          WHERE link_key = ?
          ORDER BY created_at DESC, id DESC
@@ -591,9 +642,13 @@ async function lookupSavedLink(url) {
         [key]
       );
       if (recent) {
+        // The card type lives in a "_<type>" tag.
+        const typeTag = parseTags(recent.tags).find(t => typeof t === 'string' && t.length > 1 && t.startsWith('_'));
         return {
           count,
           title: recent.title,
+          description: recent.description,
+          type: typeTag ? typeTag.slice(1) : '',
           image: recent.og_image && recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
           price: recent.price,
         };
@@ -636,8 +691,14 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
   }
 
   if (alreadyOnSphir) {
+    // The stored card is used as is (no AI); an uploaded photo is private, so the page image stays.
     return {
       ...meta,
+      title: alreadyOnSphir.title,
+      description: alreadyOnSphir.description,
+      price: alreadyOnSphir.price,
+      type: alreadyOnSphir.type || meta.type,
+      image: alreadyOnSphir.image || meta.image,
       already_on_sphir: alreadyOnSphir,
       ai: false,
       suggested_collection_id: null,
@@ -761,9 +822,9 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
       return res.json({
         url: req.query.url,
         title: alreadyOnSphir.title,
-        description: '',
+        description: alreadyOnSphir.description,
         image: alreadyOnSphir.image,
-        type: 'link',
+        type: alreadyOnSphir.type || 'link',
         tags: [],
         price: alreadyOnSphir.price,
         site: '',
@@ -952,6 +1013,49 @@ async function migrate() {
       data       BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
+    // Default "Unfiled Cards" collection (demo-feedback-1125 S3, S4). Nothing is deleted: it only
+    // flags or creates one folder per user and re-points cards that have no primary collection.
+    await client.query("ALTER TABLE folders ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false");
+    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS folders_one_default_per_user ON folders (user_id) WHERE is_default");
+    await client.query('BEGIN');
+    try {
+      // A user's existing folder named exactly "Unfiled Cards" (oldest first) becomes the default.
+      await client.query(
+        `UPDATE folders SET is_default = true WHERE id IN (
+           SELECT DISTINCT ON (f.user_id) f.id FROM folders f
+           WHERE f.name = $1 AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.user_id = f.user_id AND d.is_default)
+           ORDER BY f.user_id, f.id)`,
+        [DEFAULT_FOLDER_NAME]
+      );
+      await client.query(
+        `INSERT INTO folders (user_id, name, description, privacy, is_default)
+         SELECT u.id, $1, '', 'private', true FROM users u
+         WHERE u.is_guest = false AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.user_id = u.id AND d.is_default)`,
+        [DEFAULT_FOLDER_NAME]
+      );
+      // A card only in business_folders extras: the first extra becomes its primary collection
+      // (and leaves the extras table, like a primary set through PUT /businesses/:id/folders).
+      await client.query(
+        `WITH promoted AS (
+           UPDATE businesses b SET folder_id = x.fid
+           FROM (SELECT b2.id AS bid,
+                        (SELECT bf.folder_id FROM business_folders bf WHERE bf.business_id = b2.id
+                          ORDER BY bf.position, bf.folder_id LIMIT 1) AS fid
+                 FROM businesses b2 WHERE b2.folder_id IS NULL) x
+           WHERE b.id = x.bid AND x.fid IS NOT NULL
+           RETURNING b.id, b.folder_id)
+         DELETE FROM business_folders bf USING promoted p
+         WHERE bf.business_id = p.id AND bf.folder_id = p.folder_id`
+      );
+      await client.query(
+        `UPDATE businesses b SET folder_id = d.id
+         FROM folders d WHERE b.folder_id IS NULL AND d.user_id = b.user_id AND d.is_default`
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    }
     try {
       const { rows: backfillRows } = await client.query("SELECT id, website FROM businesses WHERE link_key = '' AND website ~* '^https?://'");
       for (const row of backfillRows) {

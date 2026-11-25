@@ -109,12 +109,12 @@ test('account deletion', { skip: !testDb && 'SPHIR_TEST_DB not set' }, async (t)
   const countImages = async (id) => (await pool.query('SELECT count(*)::int AS n FROM images WHERE user_id = $1', [id])).rows[0].n;
 
   assert.equal(await countUsers(userIdA), 1);
-  assert.equal(await countFolders(userIdA), 2);
+  assert.equal(await countFolders(userIdA), 3);
   assert.equal(await countBusinesses(userIdA), 1);
   assert.equal(await countBusinessFolders(userIdA), 1);
   assert.equal(await countImages(userIdA), 1);
   assert.equal(await countUsers(userIdB), 1);
-  assert.equal(await countFolders(userIdB), 1);
+  assert.equal(await countFolders(userIdB), 2);
 
   await t.test('1. Wrong password -> 422 { error: "Incorrect password" }; data still exists', async () => {
     const res = await call(authA, 'DELETE', '/auth', { password: 'WrongPassword' });
@@ -122,7 +122,7 @@ test('account deletion', { skip: !testDb && 'SPHIR_TEST_DB not set' }, async (t)
     assert.deepEqual(res.body, { error: 'Incorrect password' });
 
     assert.equal(await countUsers(userIdA), 1);
-    assert.equal(await countFolders(userIdA), 2);
+    assert.equal(await countFolders(userIdA), 3);
     assert.equal(await countBusinesses(userIdA), 1);
     assert.equal(await countBusinessFolders(userIdA), 1);
     assert.equal(await countImages(userIdA), 1);
@@ -134,7 +134,7 @@ test('account deletion', { skip: !testDb && 'SPHIR_TEST_DB not set' }, async (t)
     assert.deepEqual(res.body, { error: 'Incorrect password' });
 
     assert.equal(await countUsers(userIdA), 1);
-    assert.equal(await countFolders(userIdA), 2);
+    assert.equal(await countFolders(userIdA), 3);
     assert.equal(await countBusinesses(userIdA), 1);
     assert.equal(await countBusinessFolders(userIdA), 1);
     assert.equal(await countImages(userIdA), 1);
@@ -158,7 +158,7 @@ test('account deletion', { skip: !testDb && 'SPHIR_TEST_DB not set' }, async (t)
     assert.equal(await countImages(userIdA), 0);
 
     assert.equal(await countUsers(userIdB), 1);
-    assert.equal(await countFolders(userIdB), 1);
+    assert.equal(await countFolders(userIdB), 2);
   });
 
   await t.test('5. After deletion, A old token on GET /api/v1/folders -> 401, sign-in -> 401', async () => {

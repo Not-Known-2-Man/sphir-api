@@ -114,15 +114,20 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
     const previewRes = await fetch(`${base}/preview?url=${encodeURIComponent('https://youtube.com/watch?v=multi123')}`, { headers: authCaller });
     assert.equal(previewRes.status, 200);
     const body = await previewRes.json();
-    assert.equal(body.title, 'Live YouTube Title');
+    // The stored card (most recent save) is used as is, not the live page title (S1).
+    assert.equal(body.title, 'Second Variant Title');
+    assert.equal(body.description, 'Second description');
+    assert.equal(body.price, '$29.99');
+    assert.equal(body.image, 'https://example.com/thumb2.jpg');
     assert.ok(body.already_on_sphir, 'already_on_sphir should be non-null');
     assert.equal(body.already_on_sphir.count, 2);
     // Most recent row saved is user2's
     assert.equal(body.already_on_sphir.title, 'Second Variant Title');
     assert.equal(body.already_on_sphir.image, 'https://example.com/thumb2.jpg');
     assert.equal(body.already_on_sphir.price, '$29.99');
-    // Description and tags can hold the other user's own notes (S3): never shared.
-    assert.equal(body.already_on_sphir.description, undefined);
+    // demo-feedback-1125 S1: the stored description and type are shared; tags still are not.
+    assert.equal(body.already_on_sphir.description, 'Second description');
+    assert.equal(body.already_on_sphir.type, '');
     assert.equal(body.already_on_sphir.tags, undefined);
 
     // Privacy (S3): verify no user info or business ids leaked
@@ -131,7 +136,7 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
     assert.equal(body.already_on_sphir.first_name, undefined);
     assert.equal(body.already_on_sphir.last_name, undefined);
     assert.equal(body.already_on_sphir.id, undefined);
-    assert.deepEqual(Object.keys(body.already_on_sphir).sort(), ['count', 'image', 'price', 'title']);
+    assert.deepEqual(Object.keys(body.already_on_sphir).sort(), ['count', 'description', 'image', 'price', 'title', 'type']);
   });
 
   // (c) the caller's own save is counted
@@ -174,7 +179,7 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
     const body = await previewRes.json();
     assert.equal(body.title, 'Caller Saved Title');
     assert.equal(body.image, 'https://example.com/caller_thumb.jpg');
-    assert.equal(body.description, '');
+    assert.equal(body.description, 'Caller description');
     assert.deepEqual(body.tags, []);
     assert.ok(body.already_on_sphir);
     assert.equal(body.already_on_sphir.count, 3);
