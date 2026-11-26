@@ -85,6 +85,49 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.equal((await call(alice, 'PUT', `/businesses/${cardId}`, { title: 'Roller 2' })).body.price, '45 EUR');
   });
 
+  await t.test('create stores site (trimmed, max 100) and published (YYYY-MM-DD only)', async () => {
+    const plain = await call(alice, 'POST', '/businesses', { title: 'No meta' });
+    assert.equal(plain.body.site, '');
+    assert.equal(plain.body.published, '');
+    const { status, body } = await call(alice, 'POST', '/businesses', { title: 'Article', site: '  The Verge ', published: '2026-11-20' });
+    assert.equal(status, 201);
+    assert.equal(body.site, 'The Verge');
+    assert.equal(body.published, '2026-11-20');
+    const long = await call(alice, 'POST', '/businesses', { title: 'Long site', site: 's'.repeat(150), published: 'last week' });
+    assert.equal(long.body.site.length, 100);
+    assert.equal(long.body.published, '');
+    const bad = await call(alice, 'POST', '/businesses', { title: 'Bad', site: { a: 1 }, published: 20261120 });
+    assert.equal(bad.body.site, '');
+    assert.equal(bad.body.published, '');
+  });
+
+  await t.test('update changes site and published; omitting them keeps them', async () => {
+    const edited = await call(alice, 'PUT', `/businesses/${cardId}`, { site: 'Roller Shop', published: '2026-01-05' });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.site, 'Roller Shop');
+    assert.equal(edited.body.published, '2026-01-05');
+    const kept = await call(alice, 'PUT', `/businesses/${cardId}`, { title: 'Roller 3' });
+    assert.equal(kept.body.site, 'Roller Shop');
+    assert.equal(kept.body.published, '2026-01-05');
+    const list = await call(alice, 'GET', '/users/get_businesses');
+    const rows = Array.isArray(list.body) ? list.body : list.body.data || list.body.businesses;
+    const listed = rows.find(b => b.id === cardId);
+    assert.equal(listed.site, 'Roller Shop');
+    assert.equal(listed.published, '2026-01-05');
+  });
+
+  await t.test('published must be a real calendar date; PUT invalid or empty values store ``', async () => {
+    for (const date of ['2026-13-45', '0000-00-00', '2026-02-30']) {
+      assert.equal((await call(alice, 'POST', '/businesses', { title: 'Odd date', published: date })).body.published, '');
+    }
+    assert.equal((await call(alice, 'POST', '/businesses', { title: 'Leap', published: '2024-02-29' })).body.published, '2024-02-29');
+    const badDate = await call(alice, 'PUT', `/businesses/${cardId}`, { published: '2026-2-3' });
+    assert.equal(badDate.body.published, '');
+    assert.equal(badDate.body.site, 'Roller Shop');
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}`, { site: 'x'.repeat(150) })).body.site.length, 100);
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}`, { site: '' })).body.site, '');
+  });
+
   await t.test('PUT folders sets the full membership; first is the primary folder', async () => {
     const { status, body } = await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: [f2, f1, f3, f2] });
     assert.equal(status, 200);

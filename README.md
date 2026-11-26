@@ -107,10 +107,15 @@ cannot be deleted or renamed: `DELETE` and a `PUT` that changes its name answer 
 ### Businesses (Cards)
 ```
 GET    /api/v1/users/get_businesses?page=1&per_page=50
-POST   /api/v1/businesses       Body: { title, description, website, email, tags, folder_id }
-PUT    /api/v1/businesses/:id   Body: { title?, description?, website?, tags?, folder_id? }
+POST   /api/v1/businesses       Body: { title, description, website, email, tags, folder_id, og_image, price, site, published }
+PUT    /api/v1/businesses/:id   Body: { title?, description?, website?, tags?, folder_id?, og_image?, price?, site?, published? }
 DELETE /api/v1/businesses/:id
 ```
+
+`site` is the page's site name (for example `"The Verge"`, trimmed, at most 100 characters) and
+`published` its publication date as `YYYY-MM-DD`; any other value is stored as `''`. Both come from
+`GET /api/v1/preview` (`site`, `published`). On `PUT`, an absent field keeps the stored value.
+Every card in a response includes both fields.
 
 ## Environment variables (optional)
 

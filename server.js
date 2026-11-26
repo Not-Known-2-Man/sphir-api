@@ -157,6 +157,20 @@ function sanitizePrice(raw) {
   return typeof raw === 'string' ? raw.trim().slice(0, 50) : '';
 }
 
+// Site name such as "The Verge"; anything that is not a string is dropped.
+function sanitizeSite(raw) {
+  return typeof raw === 'string' ? raw.trim().slice(0, 100) : '';
+}
+
+// Publication date, kept only as a real YYYY-MM-DD calendar date (the format /preview returns).
+function sanitizePublished(raw) {
+  if (typeof raw !== 'string') return '';
+  const value = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value ? value : '';
+}
+
 // folder_ids lists every collection of the card: the primary folder_id first, then the extras.
 function formatBusiness(row) {
   const { extra_folder_ids, ...rest } = row;
@@ -439,7 +453,7 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
 app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next) => {
   try {
     const { title, description = '', website = '', email = '',
-            tags = [], folder_id = null, og_image, price } = req.body;
+            tags = [], folder_id = null, og_image, price, site, published } = req.body;
     if (!title) return res.status(422).json({ error: 'title is required' });
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
@@ -453,9 +467,9 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     }
 
     const { rows: [row] } = await query(
-      `INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key)
-       VALUES (?, COALESCE(?::int, (SELECT id FROM folders WHERE user_id = ? AND is_default)), ?,?,?,?,?,?,?,?) RETURNING *`,
-      [req.user.id, folder_id || null, req.user.id, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website)]
+      `INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key, site, published)
+       VALUES (?, COALESCE(?::int, (SELECT id FROM folders WHERE user_id = ? AND is_default)), ?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+      [req.user.id, folder_id || null, req.user.id, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website), sanitizeSite(site), sanitizePublished(published)]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -465,7 +479,7 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, description, website, email, tags, folder_id, og_image, price } = req.body;
+    const { title, description, website, email, tags, folder_id, og_image, price, site, published } = req.body;
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
     }
@@ -473,6 +487,8 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
     // undefined keeps the stored image; '' (or an invalid URL) removes it.
     let ogImage  = og_image !== undefined ? sanitizeImageUrl(og_image) : undefined;
     const priceVal = price !== undefined ? sanitizePrice(price) : undefined;
+    const siteVal = site !== undefined ? sanitizeSite(site) : undefined;
+    const publishedVal = published !== undefined ? sanitizePublished(published) : undefined;
     // Only a website string changes the key; null keeps the stored website, so it keeps the key.
     const linkKeyVal = typeof website === 'string' ? linkKey(website) : undefined;
 
@@ -495,9 +511,11 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          folder_id   = COALESCE(?, folder_id),
          og_image    = COALESCE(?, og_image),
          price       = COALESCE(?, price),
-         link_key    = COALESCE(?, link_key)
+         link_key    = COALESCE(?, link_key),
+         site        = COALESCE(?, site),
+         published   = COALESCE(?, published)
        WHERE id = ? AND user_id = ?`,
-      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, linkKeyVal, id, req.user.id]
+      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, linkKeyVal, siteVal, publishedVal, id, req.user.id]
     );
     const card = await loadBusiness(id, req.user.id);
     if (!card) return res.status(404).json({ error: 'Business not found' });
@@ -1048,6 +1066,8 @@ async function migrate() {
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS og_image TEXT NOT NULL DEFAULT ''");
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT ''");
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS link_key TEXT NOT NULL DEFAULT ''");
+    await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS site TEXT NOT NULL DEFAULT ''");
+    await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS published TEXT NOT NULL DEFAULT ''");
     await client.query("CREATE INDEX IF NOT EXISTS businesses_link_key_idx ON businesses (link_key)");
     // Extra collections of a card; the primary one stays in businesses.folder_id.
     await client.query(`CREATE TABLE IF NOT EXISTS business_folders (
