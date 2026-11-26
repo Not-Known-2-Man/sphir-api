@@ -117,6 +117,10 @@ DELETE /api/v1/businesses/:id
 `GET /api/v1/preview` (`site`, `published`). On `PUT`, an absent field keeps the stored value.
 Every card in a response includes both fields.
 
+### AI card fill and language
+
+AI-generated card descriptions (link previews and photo/screenshot text) are written in the caller's preferred language based on the `Accept-Language` header (Spanish when the first preference is `es*`, English otherwise). Titles preserve the original language of the source page or work.
+
 ## Environment variables (optional)
 
 `DATABASE_URL` (as provided by Render) takes precedence over the `DB_*` variables.
