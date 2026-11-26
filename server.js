@@ -162,9 +162,13 @@ function sanitizeSite(raw) {
   return typeof raw === 'string' ? raw.trim().slice(0, 100) : '';
 }
 
-// Publication date, kept only as YYYY-MM-DD (the format /preview returns).
+// Publication date, kept only as a real YYYY-MM-DD calendar date (the format /preview returns).
 function sanitizePublished(raw) {
-  return typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim()) ? raw.trim() : '';
+  if (typeof raw !== 'string') return '';
+  const value = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value ? value : '';
 }
 
 // folder_ids lists every collection of the card: the primary folder_id first, then the extras.

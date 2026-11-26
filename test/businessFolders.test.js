@@ -116,6 +116,18 @@ test('business price and multiple collections', { skip: !testDb && 'SPHIR_TEST_D
     assert.equal(listed.published, '2026-01-05');
   });
 
+  await t.test('published must be a real calendar date; PUT invalid or empty values store ``', async () => {
+    for (const date of ['2026-13-45', '0000-00-00', '2026-02-30']) {
+      assert.equal((await call(alice, 'POST', '/businesses', { title: 'Odd date', published: date })).body.published, '');
+    }
+    assert.equal((await call(alice, 'POST', '/businesses', { title: 'Leap', published: '2024-02-29' })).body.published, '2024-02-29');
+    const badDate = await call(alice, 'PUT', `/businesses/${cardId}`, { published: '2026-2-3' });
+    assert.equal(badDate.body.published, '');
+    assert.equal(badDate.body.site, 'Roller Shop');
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}`, { site: 'x'.repeat(150) })).body.site.length, 100);
+    assert.equal((await call(alice, 'PUT', `/businesses/${cardId}`, { site: '' })).body.site, '');
+  });
+
   await t.test('PUT folders sets the full membership; first is the primary folder', async () => {
     const { status, body } = await call(alice, 'PUT', `/businesses/${cardId}/folders`, { folder_ids: [f2, f1, f3, f2] });
     assert.equal(status, 200);
