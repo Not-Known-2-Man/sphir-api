@@ -60,13 +60,19 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
     };
   }
 
-  async function createFolder(authHeaders, name) {
+  async function createFolder(authHeaders, name, privacy) {
     const res = await fetch(`${base}/folders`, {
       method: 'POST',
       headers: authHeaders,
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, privacy }),
     });
     return res.json();
+  }
+
+  // Another user's card is shared only when unlocked and in a public collection (card privacy S3).
+  async function visibleTo(authHeaders) {
+    const folder = await createFolder(authHeaders, `Public ${Date.now()}`, 'public');
+    return { is_private: false, folder_id: folder.id };
   }
 
   const savedApiKey = process.env.ANTHROPIC_API_KEY;
@@ -273,6 +279,7 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
         website: 'https://example.com/already-saved-link?utm_source=sphir',
         og_image: 'https://example.com/thumb.jpg',
         price: '$15.00',
+        ...(await visibleTo(userAuth)),
       }),
     });
     assert.equal(saveRes.status, 201);
@@ -361,7 +368,7 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
     const saveRes = await fetch(`${base}/businesses`, {
       method: 'POST',
       headers: saverAuth,
-      body: JSON.stringify({ title: 'Stored Title', website: 'https://example.com/fetch-fails', og_image: 'https://example.com/i.jpg', price: '$9' }),
+      body: JSON.stringify({ title: 'Stored Title', website: 'https://example.com/fetch-fails', og_image: 'https://example.com/i.jpg', price: '$9', ...(await visibleTo(saverAuth)) }),
     });
     assert.equal(saveRes.status, 201);
     st.mock.method(axios, 'get', async () => { throw new Error('ECONNRESET'); });
@@ -430,7 +437,7 @@ test('preview AI routes', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, asyn
     const saverAuth = await signUp(`saver_9_${Date.now()}@example.com`);
     const callerAuth = await signUp(`caller_9_${Date.now()}@example.com`);
     const saved = `https://example.com/quota-saved-${Date.now()}`;
-    const saveRes = await fetch(`${base}/businesses`, { method: 'POST', headers: saverAuth, body: JSON.stringify({ title: 'Saved', website: saved }) });
+    const saveRes = await fetch(`${base}/businesses`, { method: 'POST', headers: saverAuth, body: JSON.stringify({ title: 'Saved', website: saved, ...(await visibleTo(saverAuth)) }) });
     assert.equal(saveRes.status, 201);
     let calls = 0;
     st.mock.method(aiCard, 'requestAnthropic', async () => {

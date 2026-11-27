@@ -107,8 +107,8 @@ cannot be deleted or renamed: `DELETE` and a `PUT` that changes its name answer 
 ### Businesses (Cards)
 ```
 GET    /api/v1/users/get_businesses?page=1&per_page=50
-POST   /api/v1/businesses       Body: { title, description, website, email, tags, folder_id, og_image, price, site, published }
-PUT    /api/v1/businesses/:id   Body: { title?, description?, website?, tags?, folder_id?, og_image?, price?, site?, published? }
+POST   /api/v1/businesses       Body: { title, description, website, email, tags, folder_id, og_image, price, site, published, is_private }
+PUT    /api/v1/businesses/:id   Body: { title?, description?, website?, tags?, folder_id?, og_image?, price?, site?, published?, is_private? }
 DELETE /api/v1/businesses/:id
 ```
 
@@ -116,6 +116,18 @@ DELETE /api/v1/businesses/:id
 `published` its publication date as `YYYY-MM-DD`; any other value is stored as `''`. Both come from
 `GET /api/v1/preview` (`site`, `published`). On `PUT`, an absent field keeps the stored value.
 Every card in a response includes both fields.
+
+### Card privacy
+
+`is_private` is the card's lock. A new card is private unless `POST` sends `is_private: false`;
+existing cards were locked by the migration. On `PUT`, only a boolean changes it. Another user may
+see a card only when it is unlocked and in at least one of the owner's `public` collections
+(`connections` grants nothing until followers exist).
+
+`GET`/`POST /api/v1/preview` return `already_on_sphir`: `null`, or `{ count, title, description,
+type, image, price }` taken from the caller's own card or a card visible to others. When every
+saved copy is hidden from the caller it is `{ count }` alone (how many people saved the link) and
+the preview is filled from the page and the AI as for a new link.
 
 ### AI card fill and language
 

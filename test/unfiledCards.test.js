@@ -72,13 +72,15 @@ test('unfiled cards default collection and card reuse', { skip: !baseTestDb && '
     const owner = await signUp('owner.reuse@example.com');
     const caller = await signUp('caller.reuse@example.com');
     const link = 'https://shop.example.com/item/42';
+    // Shared with others only when unlocked and in a public collection (card privacy S3).
+    const shared = { is_private: false, folder_id: (await call(owner, 'POST', '/folders', { name: 'Shop', privacy: 'public' })).body.id };
     assert.equal((await call(owner, 'POST', '/businesses', {
       title: 'Stored Title', description: 'Stored description', website: link, price: '$5',
-      og_image: 'https://example.com/stored.jpg', tags: ['gift', '_product'],
+      og_image: 'https://example.com/stored.jpg', tags: ['gift', '_product'], ...shared,
     })).status, 201);
     const upload = await call(owner, 'POST', '/businesses', {
       title: 'Private Photo', description: 'mine', website: 'https://shop.example.com/item/43',
-      og_image: 'https://api.example.com/api/v1/images/0a1b2c3d-0a1b-4c3d-8a1b-0a1b2c3d4e5f', tags: ['_recipe'],
+      og_image: 'https://api.example.com/api/v1/images/0a1b2c3d-0a1b-4c3d-8a1b-0a1b2c3d4e5f', tags: ['_recipe'], ...shared,
     });
     assert.equal(upload.status, 201);
 

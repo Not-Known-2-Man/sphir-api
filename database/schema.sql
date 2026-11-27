@@ -50,6 +50,9 @@ ALTER TABLE businesses ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT '';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS link_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS site TEXT NOT NULL DEFAULT '';
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS published TEXT NOT NULL DEFAULT '';
+-- Card privacy: a card is visible to others only when unlocked and in a public collection.
+-- Every card, existing ones included, starts locked.
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT true;
 CREATE INDEX IF NOT EXISTS businesses_link_key_idx ON businesses (link_key);
 
 -- Extra collections of a card; the primary one stays in businesses.folder_id.

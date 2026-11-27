@@ -453,7 +453,7 @@ app.get('/api/v1/users/get_businesses', authenticate, async (req, res, next) => 
 app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next) => {
   try {
     const { title, description = '', website = '', email = '',
-            tags = [], folder_id = null, og_image, price, site, published } = req.body;
+            tags = [], folder_id = null, og_image, price, site, published, is_private } = req.body;
     if (!title) return res.status(422).json({ error: 'title is required' });
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
@@ -467,9 +467,10 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
     }
 
     const { rows: [row] } = await query(
-      `INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key, site, published)
-       VALUES (?, COALESCE(?::int, (SELECT id FROM folders WHERE user_id = ? AND is_default)), ?,?,?,?,?,?,?,?,?,?) RETURNING *`,
-      [req.user.id, folder_id || null, req.user.id, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website), sanitizeSite(site), sanitizePublished(published)]
+      `INSERT INTO businesses (user_id, folder_id, title, description, website, email, tags, og_image, price, link_key, site, published, is_private)
+       VALUES (?, COALESCE(?::int, (SELECT id FROM folders WHERE user_id = ? AND is_default)), ?,?,?,?,?,?,?,?,?,?,?) RETURNING *`,
+      // A new card is private unless the client explicitly sends false (card privacy S1).
+      [req.user.id, folder_id || null, req.user.id, shorten(title, MAX_TITLE), description, website, email, tagsJson, ogImageUrl, sanitizePrice(price), linkKey(website), sanitizeSite(site), sanitizePublished(published), is_private !== false]
     );
     res.status(201).json(formatBusiness(row));
   } catch (err) { next(err); }
@@ -479,7 +480,7 @@ app.post('/api/v1/businesses', authenticate, requireUser, async (req, res, next)
 app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { title, description, website, email, tags, folder_id, og_image, price, site, published } = req.body;
+    const { title, description, website, email, tags, folder_id, og_image, price, site, published, is_private } = req.body;
     if (!(await folderAllowed(folder_id, req.user.id))) {
       return res.status(422).json({ error: 'Folder not found' });
     }
@@ -513,9 +514,11 @@ app.put('/api/v1/businesses/:id', authenticate, requireUser, async (req, res, ne
          price       = COALESCE(?, price),
          link_key    = COALESCE(?, link_key),
          site        = COALESCE(?, site),
-         published   = COALESCE(?, published)
+         published   = COALESCE(?, published),
+         is_private  = COALESCE(?, is_private)
        WHERE id = ? AND user_id = ?`,
-      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, linkKeyVal, siteVal, publishedVal, id, req.user.id]
+      // Only a boolean changes the lock; anything else keeps it.
+      [typeof title === 'string' ? shorten(title, MAX_TITLE) : title, description, website, email, tagsJson, folder_id || null, ogImage, priceVal, linkKeyVal, siteVal, publishedVal, typeof is_private === 'boolean' ? is_private : null, id, req.user.id]
     );
     const card = await loadBusiness(id, req.user.id);
     if (!card) return res.status(404).json({ error: 'Business not found' });
@@ -645,7 +648,18 @@ const previewAgents = {
   httpsAgent: new https.Agent({ lookup: safeLookup }),
 };
 
-async function lookupSavedLink(url) {
+// Card privacy S3: who besides the owner may see card `b`. The card must be unlocked and sit in
+// one of the owner's public collections (primary or extra). 'connections' needs followers (P6),
+// which do not exist yet, so it never grants access.
+const VISIBLE_TO_OTHERS = `(NOT b.is_private AND EXISTS (
+  SELECT 1 FROM folders f
+  WHERE f.user_id = b.user_id AND f.privacy = 'public'
+    AND (f.id = b.folder_id
+         OR f.id IN (SELECT bf.folder_id FROM business_folders bf WHERE bf.business_id = b.id))))`;
+
+// The count covers every user's cards (it reveals no content); the details come only from the
+// viewer's own card or a card visible to others. Without one the result is { count } alone.
+async function lookupSavedLink(url, viewerId) {
   try {
     const key = linkKey(url);
     if (!key) return null;
@@ -658,25 +672,24 @@ async function lookupSavedLink(url) {
     const count = rows[0]?.count || 0;
     if (count > 0) {
       const { rows: [recent] } = await query(
-        `SELECT title, description, tags, og_image, price
-         FROM businesses
-         WHERE link_key = ?
-         ORDER BY created_at DESC, id DESC
+        `SELECT b.title, b.description, b.tags, b.og_image, b.price
+         FROM businesses b
+         WHERE b.link_key = ? AND (b.user_id = ? OR ${VISIBLE_TO_OTHERS})
+         ORDER BY (b.user_id = ?) DESC, b.created_at DESC, b.id DESC
          LIMIT 1`,
-        [key]
+        [key, viewerId, viewerId]
       );
-      if (recent) {
-        // The card type lives in a "_<type>" tag.
-        const typeTag = parseTags(recent.tags).find(t => typeof t === 'string' && t.length > 1 && t.startsWith('_'));
-        return {
-          count,
-          title: recent.title,
-          description: recent.description,
-          type: typeTag ? typeTag.slice(1) : '',
-          image: recent.og_image && recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
-          price: recent.price,
-        };
-      }
+      if (!recent) return { count };
+      // The card type lives in a "_<type>" tag.
+      const typeTag = parseTags(recent.tags).find(t => typeof t === 'string' && t.length > 1 && t.startsWith('_'));
+      return {
+        count,
+        title: recent.title,
+        description: recent.description,
+        type: typeTag ? typeTag.slice(1) : '',
+        image: recent.og_image && recent.og_image.includes('/api/v1/images/') ? '' : recent.og_image,
+        price: recent.price,
+      };
     }
     return null;
   } catch (err) {
@@ -711,10 +724,10 @@ function takeAiCall(userId) {
 async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphir) {
   let alreadyOnSphir = precomputedAlreadyOnSphir;
   if (alreadyOnSphir === undefined) {
-    alreadyOnSphir = await lookupSavedLink(url);
+    alreadyOnSphir = await lookupSavedLink(url, req.user.id);
   }
 
-  if (alreadyOnSphir) {
+  if (hasStoredCard(alreadyOnSphir)) {
     // The stored card is used as is (no AI); an uploaded photo is private, so the page image stays.
     return {
       ...meta,
@@ -755,7 +768,7 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
         if (aiResult.price) updatedMeta.price = aiResult.price;
         return {
           ...updatedMeta,
-          already_on_sphir: null,
+          already_on_sphir: alreadyOnSphir || null,
           ai: true,
           suggested_collection_id: aiResult.collection_id ?? null,
         };
@@ -767,10 +780,15 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
 
   return {
     ...meta,
-    already_on_sphir: null,
+    already_on_sphir: alreadyOnSphir || null,
     ai: false,
     suggested_collection_id: null,
   };
+}
+
+// A lookup result with card details, not just the { count } of cards hidden from this viewer.
+function hasStoredCard(saved) {
+  return Boolean(saved && saved.title !== undefined);
 }
 
 app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
@@ -781,7 +799,7 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL required' });
     assertPublicUrl(url);
 
-    alreadyOnSphir = await lookupSavedLink(url);
+    alreadyOnSphir = await lookupSavedLink(url, req.user.id);
 
     const limits = {
       ...previewAgents,
@@ -848,7 +866,7 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
     const result = await finishPreview(req, url, meta, rawHtml, alreadyOnSphir);
     res.json(result);
   } catch (e) {
-    if (alreadyOnSphir) {
+    if (hasStoredCard(alreadyOnSphir)) {
       return res.json({
         url: req.query.url,
         title: alreadyOnSphir.title,
@@ -1078,6 +1096,8 @@ async function migrate() {
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS link_key TEXT NOT NULL DEFAULT ''");
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS site TEXT NOT NULL DEFAULT ''");
     await client.query("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS published TEXT NOT NULL DEFAULT ''");
+    // Card privacy: every card, existing ones included, starts locked.
+    await client.query('ALTER TABLE businesses ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT true');
     await client.query("CREATE INDEX IF NOT EXISTS businesses_link_key_idx ON businesses (link_key)");
     // Extra collections of a card; the primary one stays in businesses.folder_id.
     await client.query(`CREATE TABLE IF NOT EXISTS business_folders (
