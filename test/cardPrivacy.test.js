@@ -168,6 +168,24 @@ test('card privacy', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, async (t)
     assert.equal(res.body.already_on_sphir.description, 'Owner notes');
   });
 
+  await t.test('S4: several cards for one link -> details skip hidden cards and prefer the viewer\'s own', async (st) => {
+    mockPage(st);
+    const website = 'https://privacy.example.com/shared-link';
+    const save = (headers, title, fields) => api('POST', '/businesses', headers, { title, description: `${title} notes`, website, ...fields });
+    assert.equal((await save(owner, 'Older Visible', { is_private: false, folder_id: publicFolder })).status, 201);
+    const third = await signUp('third@example.com');
+    assert.equal((await save(third, 'Newer Locked', {})).status, 201);
+    const first = await preview(website);
+    assert.equal(first.body.already_on_sphir.count, 2);
+    assert.equal(first.body.already_on_sphir.title, 'Older Visible');
+
+    assert.equal((await save(viewer, 'Viewer Own', {})).status, 201);
+    assert.equal((await save(owner, 'Newest Visible', { is_private: false, folder_id: publicFolder })).status, 201);
+    const second = await preview(website);
+    assert.equal(second.body.already_on_sphir.count, 3);
+    assert.equal(second.body.already_on_sphir.title, 'Viewer Own');
+  });
+
   await t.test('S4: only locked cards -> the AI fills the preview and the count stays', async (st) => {
     mockPage(st);
     const aiCard = require('../lib/aiCard');
