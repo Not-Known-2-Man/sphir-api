@@ -127,7 +127,8 @@ see a card only when it is unlocked and in at least one of the owner's `public` 
 `GET`/`POST /api/v1/preview` return `already_on_sphir`: `null`, or `{ count, title, description,
 type, image, price }` taken from the caller's own card or a card visible to others. When every
 saved copy is hidden from the caller it is `{ count }` alone (how many people saved the link) and
-the preview is filled from the page and the AI as for a new link.
+the preview is filled from the page and the AI as for a new link. If the page cannot be fetched,
+`GET` still answers 200 with empty fields and that `{ count }` (a link nobody saved gives 422).
 
 ### AI card fill and language
 

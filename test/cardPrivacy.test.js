@@ -123,6 +123,22 @@ test('card privacy', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, async (t)
     assertCountOnly(res.body, 1);
   });
 
+  await t.test('S4: page fetch fails -> a hidden card still gives the count only; no card gives 422', async (st) => {
+    const axios = require('axios');
+    st.mock.method(axios, 'get', async () => { throw Object.assign(new Error('blocked'), { code: 'ECONNRESET' }); });
+    const c = await card({ folder_id: publicFolder });
+    const res = await preview(c.website);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.already_on_sphir, { count: 1 });
+    assert.equal(res.body.url, c.website);
+    assert.equal(res.body.title, '');
+    assert.equal(res.body.description, '');
+    assert.equal(res.body.price, '');
+    const none = await preview('https://privacy.example.com/never-saved');
+    assert.equal(none.status, 422);
+    assert.deepEqual(none.body, { error: 'Could not fetch metadata' });
+  });
+
   await t.test('S3/S4: unlocked card that is unfiled, private or connections-only gives the count only', async (st) => {
     mockPage(st);
     for (const folder_id of [undefined, privateFolder, connectionsFolder]) {
@@ -200,15 +216,6 @@ test('card privacy', { skip: !baseTestDb && 'SPHIR_TEST_DB not set' }, async (t)
     assert.equal(res.body.title, 'AI Title');
     assert.equal(res.body.description, 'AI description');
     assert.deepEqual(res.body.already_on_sphir, { count: 1 });
-  });
-
-  await t.test('S4: page fetch fails and only locked cards exist -> 422 as for an unsaved link', async (st) => {
-    const axios = require('axios');
-    st.mock.method(axios, 'get', async () => { throw new Error('Network timeout'); });
-    const c = await card({});
-    const res = await preview(c.website);
-    assert.equal(res.status, 422);
-    assert.deepEqual(res.body, { error: 'Could not fetch metadata' });
   });
 
   await t.test('S4: POST preview (share extension HTML) applies the same rule', async () => {

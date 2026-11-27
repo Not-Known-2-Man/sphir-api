@@ -882,6 +882,17 @@ app.get('/api/v1/preview', authenticate, requireUser, async (req, res) => {
         suggested_collection_id: null,
       });
     }
+    // Only hidden cards share this link (S4): keep the count so the client still says
+    // "Already on Sphir", with no details to fill from.
+    if (alreadyOnSphir?.count > 0) {
+      return res.json({
+        url: req.query.url, title: '', description: '', image: '', type: 'link', tags: [],
+        price: '', site: '', published: '',
+        already_on_sphir: { count: alreadyOnSphir.count },
+        ai: false,
+        suggested_collection_id: null,
+      });
+    }
     console.warn(`[preview] GET ${req.query.url} failed: ${e.response?.status || e.code || e.message}`);
     res.status(422).json({ error: 'Could not fetch metadata' });
   }
