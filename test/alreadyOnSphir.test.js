@@ -59,6 +59,14 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
   const authUser2 = await signUp('user2@example.com');
   const authCaller = await signUp('caller@example.com');
 
+  // Another user's card is shared only when unlocked and in a public collection (card privacy S3).
+  async function publicFolder(auth) {
+    const res = await fetch(`${base}/folders`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Public', privacy: 'public' }) });
+    return (await res.json()).id;
+  }
+  const shared1 = { is_private: false, folder_id: await publicFolder(authUser1) };
+  const shared2 = { is_private: false, folder_id: await publicFolder(authUser2) };
+
   // (a) no one saved it -> already_on_sphir: null
   await t.test('(a) no one saved it -> already_on_sphir: null', async (st) => {
     const axios = require('axios');
@@ -87,6 +95,7 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
         description: 'First description',
         price: '$19.99',
         tags: ['video', 'media'],
+        ...shared1,
       }),
     });
     assert.equal(res1.status, 201);
@@ -101,6 +110,7 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
         description: 'Second description',
         price: '$29.99',
         tags: ['video', 'popular'],
+        ...shared2,
       }),
     });
     assert.equal(res2.status, 201);
@@ -275,10 +285,10 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
       request: { res: { responseUrl: url } },
     }));
     await pool.query(
-      `INSERT INTO businesses (user_id, title, description, website, tags, og_image, price, link_key)
+      `INSERT INTO businesses (user_id, title, description, website, tags, og_image, price, link_key, is_private, folder_id)
        VALUES ($1, 'Private Photo', '', 'https://photo.example.com/p/2', '[]'::jsonb,
-               'https://sphir-api.onrender.com/api/v1/images/11111111-2222-4333-8444-555555555555', '', 'photo.example.com/p/2')`,
-      [1]
+               'https://sphir-api.onrender.com/api/v1/images/11111111-2222-4333-8444-555555555555', '', 'photo.example.com/p/2', false, $2)`,
+      [1, shared1.folder_id]
     );
     const prev = await (await fetch(`${base}/preview?url=${encodeURIComponent('https://photo.example.com/p/2')}`, { headers: authCaller })).json();
     assert.equal(prev.already_on_sphir.count, 1);
@@ -295,9 +305,9 @@ test('already on Sphir saved-link lookup', { skip: !baseTestDb && 'SPHIR_TEST_DB
 
     // Insert directly with empty link_key
     await pool.query(
-      `INSERT INTO businesses (user_id, title, description, website, tags, og_image, price, link_key)
-       VALUES ($1, 'Backfill Title', 'Backfill Desc', 'https://www.backfilled.example.com/item/77?utm_source=bf', '[]'::jsonb, '', '', '')`,
-      [1]
+      `INSERT INTO businesses (user_id, title, description, website, tags, og_image, price, link_key, is_private, folder_id)
+       VALUES ($1, 'Backfill Title', 'Backfill Desc', 'https://www.backfilled.example.com/item/77?utm_source=bf', '[]'::jsonb, '', '', '', false, $2)`,
+      [1, shared1.folder_id]
     );
 
     // Run startup migration/backfill
