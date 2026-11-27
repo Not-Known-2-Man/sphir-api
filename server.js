@@ -737,7 +737,13 @@ async function finishPreview(req, url, meta, html = '', precomputedAlreadyOnSphi
       );
       const text = aiCard.pageText(html);
       const aiResult = await aiCard.enrichCard(
-        { url, meta, text, collections },
+        {
+          url,
+          meta,
+          text,
+          collections,
+          language: aiCard.languageFromAcceptLanguage(req.get('Accept-Language')),
+        },
         { apiKey: process.env.ANTHROPIC_API_KEY }
       );
       if (aiResult) {
@@ -905,7 +911,11 @@ app.post('/api/v1/ai/card-from-text', authenticate, requireUser, async (req, res
       [req.user.id]
     );
     const aiResult = await aiCard.cardFromText(
-      { text: text.trim().slice(0, 6000), collections },
+      {
+        text: text.trim().slice(0, 6000),
+        collections,
+        language: aiCard.languageFromAcceptLanguage(req.get('Accept-Language')),
+      },
       { apiKey: process.env.ANTHROPIC_API_KEY }
     );
     if (aiResult) {
